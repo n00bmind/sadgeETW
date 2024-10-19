@@ -1,6 +1,7 @@
 #import "Basic";
 #import "Windows";
 #import "System";
+#import "Thread";
 
 
 LONG :: s32;
@@ -314,6 +315,7 @@ ControlTraceAType             :: #type ( TraceHandle: TRACEHANDLE, InstanceName:
 // StartTraceA :: ( TraceId: *TRACEHANDLE, InstanceName: LPCSTR, Properties: PEVENT_TRACE_PROPERTIES ) -> ULONG #foreign wmi;
 StartTraceAType               :: #type ( TraceHandle: *TRACEHANDLE, InstanceName: LPCSTR, Properties: PEVENT_TRACE_PROPERTIES ) -> ULONG #c_call;
 OpenTraceAType                :: #type ( LogFile: PEVENT_TRACE_LOGFILEA ) -> TRACEHANDLE #c_call;
+ProcessTraceType              :: #type ( HandleArray: *TRACEHANDLE, HandleCount: ULONG, StartTime: *FILETIME, EndTime: *FILETIME ) -> ULONG #c_call;
 PEVENT_CALLBACK               :: #type ( Event: PEVENT_TRACE ) #c_call;
 PEVENT_RECORD_CALLBACK        :: #type ( EventRecord: PEVENT_RECORD ) #c_call;
 PEVENT_TRACE_BUFFER_CALLBACKA :: #type ( LogFile: PEVENT_TRACE_LOGFILEA ) -> ULONG #c_call;
@@ -324,6 +326,23 @@ DefineGUID :: ( l: u32, w1: u16, w2: u16, b1: u8, b2: u8, b3: u8, b4: u8, b5: u8
 }
 
 main :: ()
+{
+    tracingThread: Thread;
+    if !thread_init( *tracingThread, ThreadProc )
+    {
+        log_error( "Failed to create tracing thread!" );
+        exit( 1 );
+    }
+    thread_start( *tracingThread );
+
+    // Wait for it to finish
+    while !thread_is_done( *tracingThread, -1 )
+    {}
+
+    thread_deinit( *tracingThread );
+}
+
+ThreadProc :: ( thread: *Thread ) -> s64
 {
     wmi := LoadLibraryA( "wmi.dll" );
     if wmi == null
@@ -348,6 +367,12 @@ main :: ()
     if OpenTraceA == null
     {
         log_error( "Failed loading entry point for OpenTraceA!" );
+        exit( 1 );
+    }
+    ProcessTrace: ProcessTraceType = GetProcAddress( wmi, "ProcessTrace" );
+    if ProcessTrace == null
+    {
+        log_error( "Failed loading entry point for ProcessTrace!" );
         exit( 1 );
     }
 
@@ -422,7 +447,20 @@ main :: ()
         exit( 1 );
     }
 
+    status = ProcessTrace( *traceHandle, 1, null, null );
+    if status != ERROR_SUCCESS
+    {
+        msg: string = "unknown";
+        if status ==
+        {
+            case ERROR_ACCESS_DENIED; msg = "access denied";
+        }
+        log_error( "ProcessTrace failed with error % (%)", status, msg );
+        exit( 1 );
+    }
+
     print( "OK\n" );
+    return 0;
 }
 
 MyEventRecordCallback :: ( EventRecord: PEVENT_RECORD ) #c_call
@@ -430,7 +468,14 @@ MyEventRecordCallback :: ( EventRecord: PEVENT_RECORD ) #c_call
     ctx: Context;
     push_context ctx
     {
-        print( "Got called!\n" );
+        header := EventRecord.EventHeader;
+
+        ProcessorNumber: UCHAR = EventRecord.BufferContext.ProcessorNumber;
+        ThreadId: ULONG  = header.ThreadId;
+        timeCycles: s64 = header.TimeStamp.QuadPart;
+
+        // Process event here.
+        print( "Got event for cpu % / thread % with timestamp %\n", ProcessorNumber, ThreadId, timeCycles );
     }
 }
 
