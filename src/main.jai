@@ -1,5 +1,6 @@
 #import "Basic";
 #import "Windows";
+#import "Windows_Utf8";
 #import "System";
 #import "Thread";
 
@@ -13,6 +14,7 @@ ULONG64 :: u64;
 ULONGLONG :: u64;
 TRACEHANDLE :: u64;
 PVOID :: *void;
+WCHAR :: u16;
 LPWSTR :: *u16;
 
 ERROR_SUCCESS :: 0;
@@ -224,6 +226,18 @@ EVENT_RECORD :: struct
 }
 PEVENT_RECORD :: *EVENT_RECORD;
 
+// TODO BUG: This struct is defined as empty in Windows.jai, which cost me a good few hours of sleuthing!
+MY_TIME_ZONE_INFORMATION :: struct
+{
+    Bias: LONG;
+    StandardName: [ 32 ]WCHAR;
+    StandardDate: SYSTEMTIME;
+    StandardBias: LONG;
+    DaylightName: [ 32 ]WCHAR;
+    DaylightDate: SYSTEMTIME;
+    DaylightBias: LONG;
+}
+
 TRACE_LOGFILE_HEADER :: struct
 {
     BufferSize:              ULONG;         // Logger buffer size in Kbytes
@@ -264,7 +278,7 @@ TRACE_LOGFILE_HEADER :: struct
 // #else
     LoggerName:              LPWSTR;
     LogFileName:             LPWSTR;
-    TimeZone:                TIME_ZONE_INFORMATION;
+    TimeZone:                MY_TIME_ZONE_INFORMATION;  // NOTE See definition above
 // #endif
     BootTime:                LARGE_INTEGER;
     PerfFreq:                LARGE_INTEGER; // Reserved
@@ -273,10 +287,10 @@ TRACE_LOGFILE_HEADER :: struct
     BuffersLost:             ULONG;
 }
 
-EVENT_TRACE_LOGFILEA :: struct
+EVENT_TRACE_LOGFILEW :: struct
 {
-    LogFileName:             LPSTR;                         // Logfile Name
-    LoggerName:              LPSTR;                         // LoggerName
+    LogFileName:             LPWSTR;                        // Logfile Name
+    LoggerName:              LPWSTR;                        // LoggerName
     CurrentTime:             LONGLONG;                      // timestamp of last event
     BuffersRead:             ULONG;                         // buffers read to date
     union
@@ -286,7 +300,7 @@ EVENT_TRACE_LOGFILEA :: struct
     };
     CurrentEvent:            EVENT_TRACE;                   // Current Event from this stream
     LogfileHeader:           TRACE_LOGFILE_HEADER;          // logfile header structure
-    BufferCallback:          PEVENT_TRACE_BUFFER_CALLBACKA; // callback before each buffer is read
+    BufferCallback:          PEVENT_TRACE_BUFFER_CALLBACKW; // callback before each buffer is read
 
     //
     // following variables are filled for BufferCallback.
@@ -305,20 +319,24 @@ EVENT_TRACE_LOGFILEA :: struct
     IsKernelTrace:           ULONG;                         // TRUE for kernel logfile
     Context:                 PVOID;                         // reserved for internal use
 };
-PEVENT_TRACE_LOGFILEA :: *EVENT_TRACE_LOGFILEA;
+PEVENT_TRACE_LOGFILEW :: *EVENT_TRACE_LOGFILEW;
 
 
-// TODO Any way to do this auto linking, but for dlls?
-wmi :: #system_library "wmi";
+advapi32 :: #system_library "advapi32";
 
 ControlTraceAType             :: #type ( TraceHandle: TRACEHANDLE, InstanceName: LPCSTR, Properties: PEVENT_TRACE_PROPERTIES, ControlCode: ULONG ) -> ULONG #c_call;
 // StartTraceA :: ( TraceId: *TRACEHANDLE, InstanceName: LPCSTR, Properties: PEVENT_TRACE_PROPERTIES ) -> ULONG #foreign wmi;
 StartTraceAType               :: #type ( TraceHandle: *TRACEHANDLE, InstanceName: LPCSTR, Properties: PEVENT_TRACE_PROPERTIES ) -> ULONG #c_call;
-OpenTraceAType                :: #type ( LogFile: PEVENT_TRACE_LOGFILEA ) -> TRACEHANDLE #c_call;
+// OpenTraceAType                :: #type ( LogFile: PEVENT_TRACE_LOGFILEA ) -> TRACEHANDLE #c_call;
 ProcessTraceType              :: #type ( HandleArray: *TRACEHANDLE, HandleCount: ULONG, StartTime: *FILETIME, EndTime: *FILETIME ) -> ULONG #c_call;
 PEVENT_CALLBACK               :: #type ( Event: PEVENT_TRACE ) #c_call;
 PEVENT_RECORD_CALLBACK        :: #type ( EventRecord: PEVENT_RECORD ) #c_call;
-PEVENT_TRACE_BUFFER_CALLBACKA :: #type ( LogFile: PEVENT_TRACE_LOGFILEA ) -> ULONG #c_call;
+PEVENT_TRACE_BUFFER_CALLBACKW :: #type ( LogFile: PEVENT_TRACE_LOGFILEW ) -> ULONG #c_call;
+
+ControlTraceW             :: ( TraceHandle: TRACEHANDLE, InstanceName: LPCWSTR, Properties: PEVENT_TRACE_PROPERTIES, ControlCode: ULONG ) -> ULONG #foreign advapi32;
+StartTraceW               :: ( TraceHandle: *TRACEHANDLE, InstanceName: LPCWSTR, Properties: PEVENT_TRACE_PROPERTIES ) -> ULONG #foreign advapi32;
+OpenTraceW                :: ( LogFile: PEVENT_TRACE_LOGFILEW ) -> TRACEHANDLE #foreign advapi32;
+ProcessTrace              :: ( HandleArray: *TRACEHANDLE, HandleCount: ULONG, StartTime: *FILETIME, EndTime: *FILETIME ) -> ULONG #foreign advapi32;
 
 DefineGUID :: ( l: u32, w1: u16, w2: u16, b1: u8, b2: u8, b3: u8, b4: u8, b5: u8, b6: u8, b7: u8, b8: u8 ) -> GUID #expand
 {
@@ -344,36 +362,40 @@ main :: ()
 
 ThreadProc :: ( thread: *Thread ) -> s64
 {
-    wmi := LoadLibraryA( "wmi.dll" );
-    if wmi == null
+    #if false
     {
-        log_error( "Failed loading library wmi.dll!" );
-        exit( 1 );
-    }
+        // wmi := LoadLibraryA( "wmi.dll" );
+        wmi := LoadLibraryA( "advapi32.dll" );
+        if wmi == null
+        {
+            log_error( "Failed loading library wmi.dll!" );
+            exit( 1 );
+        }
 
-    ControlTraceA: ControlTraceAType = GetProcAddress( wmi, "ControlTraceA" );
-    if ControlTraceA == null
-    {
-        log_error( "Failed loading entry point for ControlTraceA!" );
-        exit( 1 );
-    }
-    StartTraceA: StartTraceAType = GetProcAddress( wmi, "StartTraceA" );
-    if StartTraceA == null
-    {
-        log_error( "Failed loading entry point for StartTraceA!" );
-        exit( 1 );
-    }
-    OpenTraceA: OpenTraceAType = GetProcAddress( wmi, "OpenTraceA" );
-    if OpenTraceA == null
-    {
-        log_error( "Failed loading entry point for OpenTraceA!" );
-        exit( 1 );
-    }
-    ProcessTrace: ProcessTraceType = GetProcAddress( wmi, "ProcessTrace" );
-    if ProcessTrace == null
-    {
-        log_error( "Failed loading entry point for ProcessTrace!" );
-        exit( 1 );
+        ControlTraceA: ControlTraceAType = GetProcAddress( wmi, "ControlTraceA" );
+        if ControlTraceA == null
+        {
+            log_error( "Failed loading entry point for ControlTraceA!" );
+            exit( 1 );
+        }
+        StartTraceA: StartTraceAType = GetProcAddress( wmi, "StartTraceA" );
+        if StartTraceA == null
+        {
+            log_error( "Failed loading entry point for StartTraceA!" );
+            exit( 1 );
+        }
+        OpenTraceA: OpenTraceAType = GetProcAddress( wmi, "OpenTraceA" );
+        if OpenTraceA == null
+        {
+            log_error( "Failed loading entry point for OpenTraceA!" );
+            exit( 1 );
+        }
+        ProcessTrace: ProcessTraceType = GetProcAddress( wmi, "ProcessTrace" );
+        if ProcessTrace == null
+        {
+            log_error( "Failed loading entry point for ProcessTrace!" );
+            exit( 1 );
+        }
     }
 
     /* 9e814aad-3204-11d2-9a82-006008a86939 */
@@ -385,16 +407,19 @@ ThreadProc :: ( thread: *Thread ) -> s64
     );
 
 
-    propsBufferSize := size_of(EVENT_TRACE_PROPERTIES) + KERNEL_LOGGER_NAMEA.count + 1;
+    kernelLoggerName, ok, kernelLoggerNameSize := utf8_to_wide_new( KERNEL_LOGGER_NAMEA,, temp );
+    assert( ok );
+
+    propsBufferSize := size_of(EVENT_TRACE_PROPERTIES) + kernelLoggerNameSize + 2;
     props := cast(*EVENT_TRACE_PROPERTIES) alloc( propsBufferSize );
     memset( props, 0, propsBufferSize );
     // We still need to manually copy this ourselves to be able to call ControlTrace
-    memcpy( cast(*u8)props + size_of(EVENT_TRACE_PROPERTIES), temp_c_string( KERNEL_LOGGER_NAMEA ), KERNEL_LOGGER_NAMEA.count + 1 );
+    memcpy( cast(*u8)props + size_of(EVENT_TRACE_PROPERTIES), kernelLoggerName, kernelLoggerNameSize + 2 );
 
     props.LoggerNameOffset = size_of(EVENT_TRACE_PROPERTIES);
     props.Wnode.BufferSize = xx propsBufferSize;
 
-    status := ControlTraceA( 0, temp_c_string( KERNEL_LOGGER_NAMEA ), props, EVENT_TRACE_CONTROL_STOP );
+    status := ControlTraceW( 0, kernelLoggerName, props, EVENT_TRACE_CONTROL_STOP );
     if status != ERROR_SUCCESS
     {
         msg: string = "unknown";
@@ -419,8 +444,7 @@ ThreadProc :: ( thread: *Thread ) -> s64
     props.Wnode.Guid = SystemTraceControlGuid;
 
     sessionHandle: TRACEHANDLE;
-    status = StartTraceA( *sessionHandle, temp_c_string( KERNEL_LOGGER_NAMEA ), props );
-
+    status = StartTraceW( *sessionHandle, kernelLoggerName, props );
     if status != ERROR_SUCCESS
     {
         msg: string = "unknown";
@@ -429,21 +453,21 @@ ThreadProc :: ( thread: *Thread ) -> s64
             case ERROR_ACCESS_DENIED; msg = "access denied";
             case ERROR_ALREADY_EXISTS; msg = "session already exists";
         }
-        log_error( "StartTraceA failed with error % (%)", status, msg );
+        log_error( "StartTraceW failed with error % (%)", status, msg );
         exit( 1 );
     }
 
 
-    logFile: EVENT_TRACE_LOGFILEA;
-    logFile.LoggerName = temp_c_string( KERNEL_LOGGER_NAMEA );
+    logFile: EVENT_TRACE_LOGFILEW;
+    logFile.LoggerName = kernelLoggerName;
     logFile.ProcessTraceMode = (PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD | PROCESS_TRACE_MODE_RAW_TIMESTAMP);
     logFile.EventRecordCallback = MyEventRecordCallback;
 
-    traceHandle := OpenTraceA( *logFile );
+    traceHandle := OpenTraceW( *logFile );
     if traceHandle == cast(TRACEHANDLE) INVALID_HANDLE_VALUE //INVALID_PROCESSTRACE_HANDLE
     {
         err, msg := get_error_value_and_string();
-        log_error( "OpenTraceA failed with error % (%)", err, msg );
+        log_error( "OpenTraceW failed with error % (%)", err, msg );
         exit( 1 );
     }
 
