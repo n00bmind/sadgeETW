@@ -483,6 +483,14 @@ ThreadProc :: ( thread: *Thread ) -> s64
         exit( 1 );
     }
 
+    status = ControlTraceW( 0, kernelLoggerName, props, EVENT_TRACE_CONTROL_STOP );
+    if status != ERROR_SUCCESS
+    {
+        err, msg := get_error_value_and_string();
+        log_error( "ControlTraceA failed with error % (%)", err, msg );
+        exit( 1 );
+    }
+
     print( "OK\n" );
     return 0;
 }
