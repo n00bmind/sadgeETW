@@ -321,6 +321,43 @@ EVENT_TRACE_LOGFILEW :: struct
 };
 PEVENT_TRACE_LOGFILEW :: *EVENT_TRACE_LOGFILEW;
 
+TRACE_QUERY_INFO_CLASS :: enum
+{
+    TraceGuidQueryList;
+    TraceGuidQueryInfo;
+    TraceGuidQueryProcess;
+    TraceStackTracingInfo;   // Win7
+    TraceSystemTraceEnableFlagsInfo;
+    TraceSampledProfileIntervalInfo;
+    TraceProfileSourceConfigInfo;
+    TraceProfileSourceListInfo;
+    TracePmcEventListInfo;
+    TracePmcCounterListInfo;
+    TraceSetDisallowList;
+    TraceVersionInfo;
+    TraceGroupQueryList;
+    TraceGroupQueryInfo;
+    TraceDisallowListQuery;
+    TraceCompressionInfo;
+    TracePeriodicCaptureStateListInfo;
+    TracePeriodicCaptureStateInfo;
+    TraceProviderBinaryTracking;
+    TraceMaxLoggersQuery;
+    MaxTraceSetInfoClass;
+}
+TRACE_INFO_CLASS :: TRACE_QUERY_INFO_CLASS;
+
+PROFILE_SOURCE_INFO :: struct
+{
+    NextEntryOffset: ULONG;
+    Source:          ULONG;
+    MinInterval:     ULONG;
+    MaxInterval:     ULONG;
+    Reserved:        ULONG64;
+    // TODO 
+    Description:     [0]WCHAR;
+}
+
 
 advapi32 :: #system_library "advapi32";
 
@@ -336,6 +373,8 @@ PEVENT_TRACE_BUFFER_CALLBACKW :: #type ( LogFile: PEVENT_TRACE_LOGFILEW ) -> ULO
 ControlTraceW             :: ( TraceHandle: TRACEHANDLE, InstanceName: LPCWSTR, Properties: PEVENT_TRACE_PROPERTIES, ControlCode: ULONG ) -> ULONG #foreign advapi32;
 StartTraceW               :: ( TraceHandle: *TRACEHANDLE, InstanceName: LPCWSTR, Properties: PEVENT_TRACE_PROPERTIES ) -> ULONG #foreign advapi32;
 OpenTraceW                :: ( LogFile: PEVENT_TRACE_LOGFILEW ) -> TRACEHANDLE #foreign advapi32;
+TraceQueryInformation     :: ( SessionHandle: TRACEHANDLE, InformationClass: TRACE_INFO_CLASS, TraceInformation: *void, InformationLength: ULONG, ReturnLength: *ULONG ) -> ULONG #foreign advapi32;
+TraceSetInformation       :: ( SessionHandle: TRACEHANDLE, InformationClass: TRACE_INFO_CLASS, TraceInformation: *void, InformationLength: ULONG ) -> ULONG #foreign advapi32;
 ProcessTrace              :: ( HandleArray: *TRACEHANDLE, HandleCount: ULONG, StartTime: *FILETIME, EndTime: *FILETIME ) -> ULONG #foreign advapi32;
 
 DefineGUID :: ( l: u32, w1: u16, w2: u16, b1: u8, b2: u8, b3: u8, b4: u8, b5: u8, b6: u8, b7: u8, b8: u8 ) -> GUID #expand
@@ -457,6 +496,44 @@ ThreadProc :: ( thread: *Thread ) -> s64
         exit( 1 );
     }
 
+    // Figure out the index to each PMC from their name
+    sourceListBufferSize: ULONG;
+    TraceQueryInformation( 0, TRACE_QUERY_INFO_CLASS.TraceProfileSourceListInfo, null, 0, *sourceListBufferSize );
+
+    sourceListBuffer: *u8 = alloc( sourceListBufferSize,, temp );
+    TraceQueryInformation( 0, TRACE_QUERY_INFO_CLASS.TraceProfileSourceListInfo, sourceListBuffer, sourceListBufferSize, *sourceListBufferSize );
+
+    log( "List of profile sources:\n" );
+    sourceInfo := cast(*PROFILE_SOURCE_INFO) sourceListBuffer;
+    // Loop through all entries and print the string that starts in Description
+    while sourceInfo != null
+    {
+        name, name_ok := wide_to_utf8_new( xx *sourceInfo.Description,, temp );
+        if name_ok
+            log( "% - %\n", sourceInfo.Source, name );
+        else
+            log( "<invalid>n" );
+
+        if sourceInfo.NextEntryOffset == 0
+            break;
+
+        sourceListBuffer += sourceInfo.NextEntryOffset;
+        sourceInfo = cast(*PROFILE_SOURCE_INFO) sourceListBuffer;
+    }
+
+    // Select which PMC we want to receive and on which events
+    // EventIDs :: []CLASSIC_EVENT_ID = .[ .. ];    
+    // status = TraceSetInformation(TraceHandle, TracePmcEventListInfo, EventIDs, sizeof(EventIDs));
+    // if status != ERROR_SUCCESS
+    // {
+    //     err, msg := get_error_value_and_string();
+    //     log_error( "TraceSetInformation failed with error % (%)", err, msg );
+    //     exit( 1 );
+    // }
+
+    print( "OK\n" );
+    return 0;
+
 
     logFile: EVENT_TRACE_LOGFILEW;
     logFile.LoggerName = kernelLoggerName;
@@ -474,12 +551,8 @@ ThreadProc :: ( thread: *Thread ) -> s64
     status = ProcessTrace( *traceHandle, 1, null, null );
     if status != ERROR_SUCCESS
     {
-        msg: string = "unknown";
-        if status ==
-        {
-            case ERROR_ACCESS_DENIED; msg = "access denied";
-        }
-        log_error( "ProcessTrace failed with error % (%)", status, msg );
+        err, msg := get_error_value_and_string();
+        log_error( "ProcessTrace failed with error % (%)", err, msg );
         exit( 1 );
     }
 
@@ -491,7 +564,7 @@ ThreadProc :: ( thread: *Thread ) -> s64
         exit( 1 );
     }
 
-    print( "OK\n" );
+    print( "DONE\n" );
     return 0;
 }
 
