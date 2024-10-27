@@ -17,45 +17,52 @@ PVOID :: *void;
 WCHAR :: u16;
 LPWSTR :: *u16;
 
-ERROR_SUCCESS :: 0;
+ERROR_SUCCESS                       :: 0;
+ERROR_INVALID_PARAMETER             :: 87;
+
 // TODO I'm not sure why this doesnt compile
 // INVALID_PROCESSTRACE_HANDLE :: cast(TRACEHANDLE) INVALID_HANDLE_VALUE;
 
-EVENT_TRACE_CONTROL_STOP :: 1;
-EVENT_TRACE_FLAG_CSWITCH :: 0x00000010;  // context switches
-EVENT_TRACE_REAL_TIME_MODE :: 0x00000100;  // Real time mode on
-PROCESS_TRACE_MODE_REAL_TIME                :: 0x00000100;
-PROCESS_TRACE_MODE_RAW_TIMESTAMP            :: 0x00001000;
-PROCESS_TRACE_MODE_EVENT_RECORD             :: 0x10000000;
+EVENT_TRACE_CONTROL_STOP            :: 1;
+EVENT_TRACE_FLAG_THREAD             :: 0x00000002;  // thread start & end
+EVENT_TRACE_FLAG_CSWITCH            :: 0x00000010;  // context switches
+EVENT_TRACE_FLAG_MEMORY_PAGE_FAULTS :: 0x00001000;  // all page faults
+EVENT_TRACE_REAL_TIME_MODE          :: 0x00000100;  // Real time mode on
+EVENT_TRACE_SYSTEM_LOGGER_MODE      :: 0x02000000;  // Receive events from SystemTraceProvider
+PROCESS_TRACE_MODE_REAL_TIME        :: 0x00000100;
+PROCESS_TRACE_MODE_RAW_TIMESTAMP    :: 0x00001000;
+PROCESS_TRACE_MODE_EVENT_RECORD     :: 0x10000000;
+EVENT_HEADER_FLAG_PROCESSOR_INDEX   :: 0x0200;
 
-WNODE_FLAG_TRACED_GUID :: 0x00020000; // denotes a trace
+WNODE_FLAG_TRACED_GUID              :: 0x00020000; // denotes a trace
+WNODE_FLAG_VERSIONED_PROPERTIES     :: 0x00800000;
 
-KERNEL_LOGGER_NAMEA :: "NT Kernel Logger";
+KERNEL_LOGGER_NAMEA                 :: "NT Kernel Logger";
 
 
 WNODE_HEADER :: struct
 {
-    BufferSize: ULONG;        // Size of entire buffer inclusive of this ULONG
-    ProviderId: ULONG;    // Provider Id of driver returning this buffer
+    BufferSize:            ULONG;         // Size of entire buffer inclusive of this ULONG
+    ProviderId:            ULONG;         // Provider Id of driver returning this buffer
     union
     {
-        HistoricalContext: ULONG64;  // Logger use
+        HistoricalContext: ULONG64;       // Logger use
         struct
         {
-            Version: ULONG;           // Reserved
-            Linkage: ULONG;           // Linkage field reserved for WMI
+            Version:       ULONG;         // Reserved
+            Linkage:       ULONG;         // Linkage field reserved for WMI
         }
     }
 
     union
     {
-        CountLost: ULONG;         // Reserved
-        KernelHandle: HANDLE;     // Kernel handle for data block
-        TimeStamp: LARGE_INTEGER; // Timestamp as returned in units of 100ns since 1/1/1601
+        CountLost:         ULONG;         // Reserved
+        KernelHandle:      HANDLE;        // Kernel handle for data block
+        TimeStamp:         LARGE_INTEGER; // Timestamp as returned in units of 100ns since 1/1/1601
     }
-    Guid: GUID;                  // Guid for data block returned with results
-    ClientContext: ULONG;
-    Flags: ULONG;             // Flags, see below
+    Guid:                  GUID;          // Guid for data block returned with results
+    ClientContext:         ULONG;
+    Flags:                 ULONG;         // Flags, see below
 }
 
 EVENT_TRACE_PROPERTIES :: struct
@@ -86,7 +93,58 @@ EVENT_TRACE_PROPERTIES :: struct
     LogFileNameOffset:   ULONG;  // Offset to LogFileName
     LoggerNameOffset:    ULONG;  // Offset to LoggerName
 }
-PEVENT_TRACE_PROPERTIES :: *EVENT_TRACE_PROPERTIES;
+
+EVENT_TRACE_PROPERTIES_V2 :: struct
+{
+    Wnode:                 WNODE_HEADER;             // Always have WNODE_FLAG_VERSIONED_PROPERTIES.
+
+    // data provided by caller
+    BufferSize:            ULONG;                    // buffer size for logging (kbytes)
+    MinimumBuffers:        ULONG;                    // minimum to preallocate
+    MaximumBuffers:        ULONG;                    // maximum buffers allowed
+    MaximumFileSize:       ULONG;                    // maximum logfile size (in MBytes)
+    LogFileMode:           ULONG;                    // sequential, circular
+    FlushTimer:            ULONG;                    // buffer flush timer, in seconds
+    EnableFlags:           ULONG;                    // trace enable flags
+    union {
+        AgeLimit:          LONG;                     // unused
+        FlushThreshold:    LONG;                     // Number of buffers to fill before flushing
+    }
+
+    // data returned to caller
+    NumberOfBuffers:       ULONG;                    // no of buffers in use
+    FreeBuffers:           ULONG;                    // no of buffers free
+    EventsLost:            ULONG;                    // event records lost
+    BuffersWritten:        ULONG;                    // no of buffers written to file
+    LogBuffersLost:        ULONG;                    // no of logfile write failures
+    RealTimeBuffersLost:   ULONG;                    // no of rt delivery failures
+    LoggerThreadId:        HANDLE;                   // thread id of Logger
+    LogFileNameOffset:     ULONG;                    // Offset to LogFileName
+    LoggerNameOffset:      ULONG;                    // Offset to LoggerName
+
+    // V2 data
+    union {
+        struct {
+            VersionNumber: UCHAR;                // Should be set to 2 for this version.
+        }
+        V2Control:         ULONG;
+    }
+    FilterDescCount:       ULONG;                    // Number of filters
+    FilterDesc:            *EVENT_FILTER_DESCRIPTOR; // Only applicable for Private Loggers
+    union {
+        struct {
+            Wow:           ULONG;               // Logger was started by a WOW64 process (output only).
+        }
+        V2Options:         ULONG64;
+    }
+}
+
+EVENT_FILTER_DESCRIPTOR :: struct
+{
+    Ptr:  ULONGLONG;
+    Size: ULONG;
+    Type: ULONG;
+}
 
 // overlays WNODE_HEADER
 EVENT_TRACE_HEADER :: struct
@@ -224,7 +282,6 @@ EVENT_RECORD :: struct
     UserData:          PVOID;                            // Pointer to user data
     UserContext:       PVOID;                            // Context from OpenTrace
 }
-PEVENT_RECORD :: *EVENT_RECORD;
 
 // TODO BUG: This struct is defined as empty in Windows.jai, which cost me a good few hours of sleuthing!
 MY_TIME_ZONE_INFORMATION :: struct
@@ -358,150 +415,207 @@ PROFILE_SOURCE_INFO :: struct
     Description:     [0]WCHAR;
 }
 
+CLASSIC_EVENT_ID :: struct
+{
+    EventGuid: GUID;
+    Type:      UCHAR;
+    Reserved:  [7]UCHAR;
+}
+
+TRACE_GUID_REGISTRATION :: struct
+{
+    Guid:      *GUID;           // Guid of data block being registered or updated.
+    RegHandle: HANDLE;          // Guid Registration Handle is returned.
+}
+
+WMIDPREQUESTCODE :: enum
+{
+    WMI_GET_ALL_DATA :: 0;
+    WMI_GET_SINGLE_INSTANCE :: 1;
+    WMI_SET_SINGLE_INSTANCE :: 2;
+    WMI_SET_SINGLE_ITEM :: 3;
+    WMI_ENABLE_EVENTS :: 4;
+    WMI_DISABLE_EVENTS :: 5;
+    WMI_ENABLE_COLLECTION :: 6;
+    WMI_DISABLE_COLLECTION :: 7;
+    WMI_REGINFO :: 8;
+    WMI_EXECUTE_METHOD :: 9;
+    WMI_CAPTURE_STATE :: 10;
+}
+
+PEVENT_CALLBACK               :: #type ( Event: PEVENT_TRACE ) #c_call;
+PEVENT_RECORD_CALLBACK        :: #type ( EventRecord: *EVENT_RECORD ) #c_call;
+PEVENT_TRACE_BUFFER_CALLBACKW :: #type ( LogFile: PEVENT_TRACE_LOGFILEW ) -> ULONG #c_call;
+WMIDPREQUEST                  :: #type ( RequestCode: WMIDPREQUESTCODE, RequestContext: *void, BufferSize: *ULONG, Buffer: *void ) -> ULONG #c_call;
 
 advapi32 :: #system_library "advapi32";
 
-ControlTraceAType             :: #type ( TraceHandle: TRACEHANDLE, InstanceName: LPCSTR, Properties: PEVENT_TRACE_PROPERTIES, ControlCode: ULONG ) -> ULONG #c_call;
-// StartTraceA :: ( TraceId: *TRACEHANDLE, InstanceName: LPCSTR, Properties: PEVENT_TRACE_PROPERTIES ) -> ULONG #foreign wmi;
-StartTraceAType               :: #type ( TraceHandle: *TRACEHANDLE, InstanceName: LPCSTR, Properties: PEVENT_TRACE_PROPERTIES ) -> ULONG #c_call;
-// OpenTraceAType                :: #type ( LogFile: PEVENT_TRACE_LOGFILEA ) -> TRACEHANDLE #c_call;
-ProcessTraceType              :: #type ( HandleArray: *TRACEHANDLE, HandleCount: ULONG, StartTime: *FILETIME, EndTime: *FILETIME ) -> ULONG #c_call;
-PEVENT_CALLBACK               :: #type ( Event: PEVENT_TRACE ) #c_call;
-PEVENT_RECORD_CALLBACK        :: #type ( EventRecord: PEVENT_RECORD ) #c_call;
-PEVENT_TRACE_BUFFER_CALLBACKW :: #type ( LogFile: PEVENT_TRACE_LOGFILEW ) -> ULONG #c_call;
-
-ControlTraceW             :: ( TraceHandle: TRACEHANDLE, InstanceName: LPCWSTR, Properties: PEVENT_TRACE_PROPERTIES, ControlCode: ULONG ) -> ULONG #foreign advapi32;
-StartTraceW               :: ( TraceHandle: *TRACEHANDLE, InstanceName: LPCWSTR, Properties: PEVENT_TRACE_PROPERTIES ) -> ULONG #foreign advapi32;
+ControlTraceW             :: ( TraceHandle: TRACEHANDLE, InstanceName: LPCWSTR, Properties: *EVENT_TRACE_PROPERTIES, ControlCode: ULONG ) -> ULONG #foreign advapi32;
+StartTraceW               :: ( TraceHandle: *TRACEHANDLE, InstanceName: LPCWSTR, Properties: *EVENT_TRACE_PROPERTIES ) -> ULONG #foreign advapi32;
 OpenTraceW                :: ( LogFile: PEVENT_TRACE_LOGFILEW ) -> TRACEHANDLE #foreign advapi32;
 TraceQueryInformation     :: ( SessionHandle: TRACEHANDLE, InformationClass: TRACE_INFO_CLASS, TraceInformation: *void, InformationLength: ULONG, ReturnLength: *ULONG ) -> ULONG #foreign advapi32;
 TraceSetInformation       :: ( SessionHandle: TRACEHANDLE, InformationClass: TRACE_INFO_CLASS, TraceInformation: *void, InformationLength: ULONG ) -> ULONG #foreign advapi32;
 ProcessTrace              :: ( HandleArray: *TRACEHANDLE, HandleCount: ULONG, StartTime: *FILETIME, EndTime: *FILETIME ) -> ULONG #foreign advapi32;
+RegisterTraceGuidsW       :: ( RequestAddress: WMIDPREQUEST, RequestContext: *void, ControlGuid: *GUID, GuidCount: ULONG, TraceGuidReg: *TRACE_GUID_REGISTRATION, MofImagePath: LPCWSTR, MofResourceName: LPCWSTR, RegistrationHandle: *TRACEHANDLE ) -> ULONG #foreign advapi32;
+TraceEvent                :: ( TraceHandle: TRACEHANDLE, EventTrace: *EVENT_TRACE_HEADER ) -> ULONG #foreign advapi32;
+GetTraceLoggerHandle      :: ( Buffer: *void ) -> TRACEHANDLE #foreign advapi32;
+EnableTrace               :: ( Enable: ULONG, EnableFlag: ULONG, EnableLevel: ULONG, ControlGuid: *GUID, TraceHandle: TRACEHANDLE ) -> ULONG #foreign advapi32;
 
 DefineGUID :: ( l: u32, w1: u16, w2: u16, b1: u8, b2: u8, b3: u8, b4: u8, b5: u8, b6: u8, b7: u8, b8: u8 ) -> GUID #expand
 {
     return GUID.{ l, w1, w2, u8.[ b1, b2, b3, b4, b5, b6, b7, b8 ] };
 }
 
+/* 9e814aad-3204-11d2-9a82-006008a86939 */
+SystemTraceControlGuid :: #run DefineGUID(
+    0x9e814aad,
+    0x3204,
+    0x11d2,
+    0x9a, 0x82, 0x00, 0x60, 0x08, 0xa8, 0x69, 0x39
+);
+
+/* 3d6fa8d1-fe05-11d0-9dda-00c04fd7ba7c */
+ThreadGuid :: #run DefineGUID(
+    0x3d6fa8d1,
+    0xfe05,
+    0x11d0,
+    0x9d, 0xda, 0x00, 0xc0, 0x4f, 0xd7, 0xba, 0x7c
+);
+
+// {5E60DAA3-471D-49B2-B608-B1FF493AE160}
+MyEventGuid :: #run DefineGUID(
+    0x5e60daa3,
+    0x471d,
+    0x49b2,
+    0xb6, 0x8, 0xb1, 0xff, 0x49, 0x3a, 0xe1, 0x60
+);
+
+// {DCAEDCFA-DB98-476D-A786-96EB54152529}
+MyProviderGuid :: #run DefineGUID(
+    0xdcaedcfa,
+    0xdb98,
+    0x476d,
+    0xa7, 0x86, 0x96, 0xeb, 0x54, 0x15, 0x25, 0x29
+);
+
+globalProviderSessionHandle: TRACEHANDLE;
+
+
 main :: ()
-{
-    tracingThread: Thread;
-    if !thread_init( *tracingThread, ThreadProc )
-    {
-        log_error( "Failed to create tracing thread!" );
-        exit( 1 );
-    }
-    thread_start( *tracingThread );
-
-    // Wait for it to finish
-    while !thread_is_done( *tracingThread, -1 )
-    {}
-
-    thread_deinit( *tracingThread );
-}
-
-ThreadProc :: ( thread: *Thread ) -> s64
 {
     #if false
     {
-        // wmi := LoadLibraryA( "wmi.dll" );
-        wmi := LoadLibraryA( "advapi32.dll" );
-        if wmi == null
+        kernelLoggerName, ok, kernelLoggerNameSize := utf8_to_wide_new( KERNEL_LOGGER_NAMEA,, temp );
+        assert( ok );
+
+        propsBufferSize := size_of(EVENT_TRACE_PROPERTIES) + kernelLoggerNameSize + 2;
+        props := cast(*EVENT_TRACE_PROPERTIES) alloc( propsBufferSize );
+        memset( props, 0, propsBufferSize );
+        // We still need to manually copy this ourselves to be able to call ControlTrace
+        memcpy( cast(*u8)props + size_of(EVENT_TRACE_PROPERTIES), kernelLoggerName, kernelLoggerNameSize + 2 );
+
+        props.LoggerNameOffset = size_of(EVENT_TRACE_PROPERTIES);
+        props.Wnode.BufferSize = xx propsBufferSize;
+
+        status := ControlTraceW( 0, kernelLoggerName, props, EVENT_TRACE_CONTROL_STOP );
+        if status != ERROR_SUCCESS
         {
-            log_error( "Failed loading library wmi.dll!" );
-            exit( 1 );
+            msg: string = "unknown";
+            if status ==
+            {
+                case ERROR_ACCESS_DENIED; msg = "access denied";
+                case ERROR_ALREADY_EXISTS; msg = "session already exists";
+            }
+            log_error( "ControlTraceW failed with error % (%)", status, msg );
+            // exit( 1 );
         }
 
-        ControlTraceA: ControlTraceAType = GetProcAddress( wmi, "ControlTraceA" );
-        if ControlTraceA == null
-        {
-            log_error( "Failed loading entry point for ControlTraceA!" );
-            exit( 1 );
-        }
-        StartTraceA: StartTraceAType = GetProcAddress( wmi, "StartTraceA" );
-        if StartTraceA == null
-        {
-            log_error( "Failed loading entry point for StartTraceA!" );
-            exit( 1 );
-        }
-        OpenTraceA: OpenTraceAType = GetProcAddress( wmi, "OpenTraceA" );
-        if OpenTraceA == null
-        {
-            log_error( "Failed loading entry point for OpenTraceA!" );
-            exit( 1 );
-        }
-        ProcessTrace: ProcessTraceType = GetProcAddress( wmi, "ProcessTrace" );
-        if ProcessTrace == null
-        {
-            log_error( "Failed loading entry point for ProcessTrace!" );
-            exit( 1 );
-        }
+        memset( props, 0, propsBufferSize );
+        props.LoggerNameOffset = size_of(EVENT_TRACE_PROPERTIES);
+        // TODO How do we indicate that we want to listen for the events we will emit with TraceEvent!?
+        props.EnableFlags = 0; //EVENT_TRACE_FLAG_CSWITCH; // | EVENT_TRACE_FLAG_MEMORY_PAGE_FAULTS;
+        props.LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
+        props.Wnode.BufferSize = xx propsBufferSize;
+        props.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
+        // Timestamps from QueryPerformanceCounter
+        props.Wnode.ClientContext = 1;
+        props.Wnode.Guid = SystemTraceControlGuid;
     }
 
-    /* 9e814aad-3204-11d2-9a82-006008a86939 */
-    SystemTraceControlGuid :: #run DefineGUID(
-        0x9e814aad,
-        0x3204,
-        0x11d2,
-        0x9a, 0x82, 0x00, 0x60, 0x08, 0xa8, 0x69, 0x39
-    );
-
-
-    kernelLoggerName, ok, kernelLoggerNameSize := utf8_to_wide_new( KERNEL_LOGGER_NAMEA,, temp );
-    assert( ok );
-
-    propsBufferSize := size_of(EVENT_TRACE_PROPERTIES) + kernelLoggerNameSize + 2;
-    props := cast(*EVENT_TRACE_PROPERTIES) alloc( propsBufferSize );
-    memset( props, 0, propsBufferSize );
-    // We still need to manually copy this ourselves to be able to call ControlTrace
-    memcpy( cast(*u8)props + size_of(EVENT_TRACE_PROPERTIES), kernelLoggerName, kernelLoggerNameSize + 2 );
-
-    props.LoggerNameOffset = size_of(EVENT_TRACE_PROPERTIES);
-    props.Wnode.BufferSize = xx propsBufferSize;
-
-    status := ControlTraceW( 0, kernelLoggerName, props, EVENT_TRACE_CONTROL_STOP );
-    if status != ERROR_SUCCESS
+    sessionProps: struct
     {
-        msg: string = "unknown";
-        if status ==
-        {
-            case ERROR_ACCESS_DENIED; msg = "access denied";
-            case ERROR_ALREADY_EXISTS; msg = "session already exists";
-        }
-        log_error( "ControlTraceA failed with error % (%)", status, msg );
-        // exit( 1 );
-    }
+        Properties: EVENT_TRACE_PROPERTIES_V2;
+        LoggerName: [128]WCHAR;
+    };
 
-
-    memset( props, 0, propsBufferSize );
-    props.LoggerNameOffset = size_of(EVENT_TRACE_PROPERTIES);
-    props.EnableFlags = EVENT_TRACE_FLAG_CSWITCH;
-    props.LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
-    props.Wnode.BufferSize = xx propsBufferSize;
-    props.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
+	// ZeroMemory(&sessionProps, size_of(sessionProps));
+    props2 := *sessionProps.Properties;
+	props2.Wnode.BufferSize = size_of( type_of( sessionProps ) );
     // Timestamps from QueryPerformanceCounter
-    props.Wnode.ClientContext = 1;
-    props.Wnode.Guid = SystemTraceControlGuid;
+    // props2.Wnode.ClientContext = 1;
+    // Timestamps from CPU cycle counter
+	props2.Wnode.ClientContext = 3;
+	props2.Wnode.Flags = WNODE_FLAG_TRACED_GUID | WNODE_FLAG_VERSIONED_PROPERTIES;
+	props2.LogFileMode = EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_SYSTEM_LOGGER_MODE;
+	props2.VersionNumber = 2;
+    props2.EnableFlags = 0; //EVENT_TRACE_FLAG_CSWITCH; // | EVENT_TRACE_FLAG_MEMORY_PAGE_FAULTS;
+	props2.LoggerNameOffset = size_of( type_of( sessionProps.Properties ) );
 
     sessionHandle: TRACEHANDLE;
-    status = StartTraceW( *sessionHandle, kernelLoggerName, props );
+    instanceName, ok := utf8_to_wide_new( "SadgeETW",, temp );
+    assert( ok );
+
+    // status = StartTraceW( *sessionHandle, kernelLoggerName, props );
+    status := StartTraceW( *sessionHandle, instanceName, xx props2 );
     if status != ERROR_SUCCESS
     {
-        msg: string = "unknown";
-        if status ==
+        if status == ERROR_ALREADY_EXISTS
         {
-            case ERROR_ACCESS_DENIED; msg = "access denied";
-            case ERROR_ALREADY_EXISTS; msg = "session already exists";
+            // stop existing trace in case it is already running
+            status = ControlTraceW( 0, instanceName, xx props2, EVENT_TRACE_CONTROL_STOP );
+            assert( status == ERROR_SUCCESS || status == ERROR_MORE_DATA );
+
+            status = StartTraceW( *sessionHandle, instanceName, xx props2 );
         }
-        log_error( "StartTraceW failed with error % (%)", status, msg );
+
+        if status != ERROR_SUCCESS
+        {
+            msg := get_error_string( xx status );
+            log_error( "StartTraceW failed with error % (%)", status, msg );
+            exit( 1 );
+        }
+    }
+
+
+    // TODO Do we need this crap after all?
+    eventClassGuids := TRACE_GUID_REGISTRATION.[
+        .{ *MyEventGuid, null }
+    ];
+    providerRegistrationHandle: TRACEHANDLE;
+    status = RegisterTraceGuidsW( MyProviderControlCallback, null, *MyProviderGuid, eventClassGuids.count, eventClassGuids.data,
+                                  null, null, *providerRegistrationHandle );
+    if status != ERROR_SUCCESS
+    {
+        msg := get_error_string( xx status );
+        log_error( "RegisterTraceGuidsW failed with error % (%)", status, msg );
         exit( 1 );
     }
 
+    status = EnableTrace( 1, 1, 1, *MyProviderGuid, sessionHandle );
+    if status != ERROR_SUCCESS
+    {
+        msg := get_error_string( xx status );
+        log_error( "EnableTrace failed with error % (%) / handle is: 0x%", status, msg, formatHex( sessionHandle ) );
+        exit( 1 );
+    }
+
+
     // Figure out the index to each PMC from their name
     sourceListBufferSize: ULONG;
-    TraceQueryInformation( 0, TRACE_QUERY_INFO_CLASS.TraceProfileSourceListInfo, null, 0, *sourceListBufferSize );
+    TraceQueryInformation( 0, .TraceProfileSourceListInfo, null, 0, *sourceListBufferSize );
 
     sourceListBuffer: *u8 = alloc( sourceListBufferSize,, temp );
-    TraceQueryInformation( 0, TRACE_QUERY_INFO_CLASS.TraceProfileSourceListInfo, sourceListBuffer, sourceListBufferSize, *sourceListBufferSize );
+    TraceQueryInformation( 0, .TraceProfileSourceListInfo, sourceListBuffer, sourceListBufferSize, *sourceListBufferSize );
 
     log( "List of profile sources:\n" );
     sourceInfo := cast(*PROFILE_SOURCE_INFO) sourceListBuffer;
@@ -521,22 +635,51 @@ ThreadProc :: ( thread: *Thread ) -> s64
         sourceInfo = cast(*PROFILE_SOURCE_INFO) sourceListBuffer;
     }
 
-    // Select which PMC we want to receive and on which events
-    // EventIDs :: []CLASSIC_EVENT_ID = .[ .. ];    
-    // status = TraceSetInformation(TraceHandle, TracePmcEventListInfo, EventIDs, sizeof(EventIDs));
-    // if status != ERROR_SUCCESS
-    // {
-    //     err, msg := get_error_value_and_string();
-    //     log_error( "TraceSetInformation failed with error % (%)", err, msg );
-    //     exit( 1 );
-    // }
+    // Select which PMC we want to receive and on which events (apparently can only accept 4 of each?)
+    // TotalIssues, BranchInstructions, BranchMispredictions, CacheMisses
+    // TODO Do the actual mapping of each of these!
+    // NOTE Martins: "if this triggers ERROR_BUSY = 0xaa, then I believe that that someone else is collecting PMU counters
+    // in the system, and I'm not sure how or if at all you to forcefully stop/reconfigure it. Rebooting helps."
+    PMCIds :: ULONG.[ 2, 6, 11, 10 ];
+    status = TraceSetInformation( sessionHandle, .TracePmcCounterListInfo, PMCIds.data, PMCIds.count * size_of(ULONG) );
+    if status != ERROR_SUCCESS
+    {
+        msg := get_error_string( xx status );
+        log_error( "TraceSetInformation failed with error % (%)", status, msg );
+        exit( 1 );
+    }
 
-    print( "OK\n" );
-    return 0;
+    // TODO In reality we only want to receive PMCs for the custom events we emit
+    // TODO Only some events support attaching PMCs.. check Martins code!
+    // https://learn.microsoft.com/en-us/windows/win32/etw/thread-v2
+    threadEventId :: CLASSIC_EVENT_ID.{
+        ThreadGuid,
+        1, // Thread start
+        // 3, // Enumerate threads
+        // ? - Context switches
+        .[0,0,0,0,0,0,0]
+    };
+     // TODO Why doesnt it like this??
+    myEventId :: CLASSIC_EVENT_ID.{
+        MyEventGuid,
+        1,
+        .[0,0,0,0,0,0,0]
+    };
+
+    EventIds :: CLASSIC_EVENT_ID.[ myEventId ];    
+    status = TraceSetInformation( sessionHandle, .TracePmcEventListInfo, EventIds.data, EventIds.count * size_of(CLASSIC_EVENT_ID) );
+    if status != ERROR_SUCCESS
+    {
+        msg := get_error_string( xx status );
+        log_error( "TraceSetInformation failed with error % (%)", status, msg );
+        exit( 1 );
+    }
+
 
 
     logFile: EVENT_TRACE_LOGFILEW;
-    logFile.LoggerName = kernelLoggerName;
+    // logFile.LoggerName = kernelLoggerName;
+    logFile.LoggerName = instanceName;
     logFile.ProcessTraceMode = (PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD | PROCESS_TRACE_MODE_RAW_TIMESTAMP);
     logFile.EventRecordCallback = MyEventRecordCallback;
 
@@ -548,39 +691,146 @@ ThreadProc :: ( thread: *Thread ) -> s64
         exit( 1 );
     }
 
-    status = ProcessTrace( *traceHandle, 1, null, null );
+
+    tracingThread: Thread;
+    tracingThread.data = xx traceHandle;
+
+    if !thread_init( *tracingThread, ThreadProc )
+    {
+        log_error( "Failed to create tracing thread!" );
+        exit( 1 );
+    }
+    thread_start( *tracingThread );
+
+
+    MyEvent :: struct
+    {
+        Header: EVENT_TRACE_HEADER;
+    }
+
+    myEvent: MyEvent;
+    myEvent.Header.Size = size_of(EVENT_TRACE_HEADER);
+    myEvent.Header.Flags = WNODE_FLAG_TRACED_GUID; // | WNODE_FLAG_USE_MOF_PTR;
+    myEvent.Header.Guid = MyEventGuid;
+    // myEvent.Header.Class.Type = MY_EVENT_TYPE;
+    // myEvent.Header.Class.Version = 1;
+    // myEvent.Header.Class.Level = g_EnableLevel;
+
+    status = TraceEvent( sessionHandle, xx *myEvent );
     if status != ERROR_SUCCESS
     {
-        err, msg := get_error_value_and_string();
-        log_error( "ProcessTrace failed with error % (%)", err, msg );
+        msg := get_error_string( xx status );
+        log_error( "TraceEvent failed with error % (%) / handle is: 0x%", status, msg, formatHex( sessionHandle ) );
         exit( 1 );
     }
 
-    status = ControlTraceW( 0, kernelLoggerName, props, EVENT_TRACE_CONTROL_STOP );
+
+    // Wait for it to finish
+    while !thread_is_done( *tracingThread, -1 )
+    {}
+
+    thread_deinit( *tracingThread );
+
+    status = ControlTraceW( 0, instanceName, xx *sessionProps, EVENT_TRACE_CONTROL_STOP );
     if status != ERROR_SUCCESS
     {
-        err, msg := get_error_value_and_string();
-        log_error( "ControlTraceA failed with error % (%)", err, msg );
+        msg := get_error_string( xx status );
+        log_error( "ControlTraceW failed with error % (%)", status, msg );
+        exit( 1 );
+    }
+}
+
+ThreadProc :: ( thread: *Thread ) -> s64
+{
+    traceHandle := cast(TRACEHANDLE) thread.data;
+
+    log( "##### Beginning of ProcessTrace output:\n" );
+    status := ProcessTrace( *traceHandle, 1, null, null );
+    if status != ERROR_SUCCESS
+    {
+        msg := get_error_string( xx status );
+        log_error( "ProcessTrace failed with error % (%)", status, msg );
         exit( 1 );
     }
 
-    print( "DONE\n" );
+    log( "ProcessTrace DONE\n" );
     return 0;
 }
 
-MyEventRecordCallback :: ( EventRecord: PEVENT_RECORD ) #c_call
+
+GetEventProcessorIndex :: ( eventRecord: *EVENT_RECORD ) -> ULONG
+{
+    if eventRecord.EventHeader.Flags & EVENT_HEADER_FLAG_PROCESSOR_INDEX != 0
+        return eventRecord.BufferContext.ProcessorIndex;
+    else
+        return eventRecord.BufferContext.ProcessorNumber;
+}
+
+formatHex :: #bake_arguments formatInt(base = 16, padding = #char "0");
+
+// TODO Ideally should be our own formatter
+ToGuidString :: ( guid: GUID ) -> string
+{
+    return tprint( "%-%-%-%0%0-%0%0%0%0%0%0",
+                    formatHex( guid.Data1, minimum_digits = 8 ),
+                    formatHex( guid.Data2, minimum_digits = 4 ),
+                    formatHex( guid.Data3, minimum_digits = 4 ),
+                    formatHex( guid.Data4[0], minimum_digits = 2 ),
+                    formatHex( guid.Data4[1], minimum_digits = 2 ),
+                    formatHex( guid.Data4[2], minimum_digits = 2 ),
+                    formatHex( guid.Data4[3], minimum_digits = 2 ),
+                    formatHex( guid.Data4[4], minimum_digits = 2 ),
+                    formatHex( guid.Data4[5], minimum_digits = 2 ),
+                    formatHex( guid.Data4[6], minimum_digits = 2 ),
+                    formatHex( guid.Data4[7], minimum_digits = 2 ),
+               );
+}
+
+MyEventRecordCallback :: ( eventRecord: *EVENT_RECORD ) #c_call
 {
     ctx: Context;
     push_context ctx
     {
-        header := EventRecord.EventHeader;
+        header := eventRecord.EventHeader;
 
-        ProcessorNumber: UCHAR = EventRecord.BufferContext.ProcessorNumber;
+        ProcessorNumber : = GetEventProcessorIndex( eventRecord );
         ThreadId: ULONG  = header.ThreadId;
         timeCycles: s64 = header.TimeStamp.QuadPart;
 
         // Process event here.
-        print( "Got event for cpu % / thread % with timestamp %\n", ProcessorNumber, ThreadId, timeCycles );
+        log( "% -> New event for cpu % / thread %\n", timeCycles, ProcessorNumber, ThreadId );
+        log( "   %, user: %, extended: %\n", ToGuidString( header.ProviderId ), eventRecord.UserDataLength, eventRecord.ExtendedDataCount );
     }
 }
 
+MyProviderControlCallback :: ( requestCode: WMIDPREQUESTCODE, requestContext: *void, reserved: *ULONG, header: *void ) -> ULONG #c_call
+{
+    ctx: Context;
+    push_context ctx
+    {
+        status: ULONG = ERROR_INVALID_PARAMETER;
+
+        if requestCode ==
+        {
+            case .WMI_ENABLE_EVENTS;
+            {
+                globalProviderSessionHandle = GetTraceLoggerHandle( header );
+                if cast(HANDLE)globalProviderSessionHandle == INVALID_HANDLE_VALUE
+                {
+                    err, msg := get_error_value_and_string();
+                    log_error( "GetTraceLoggerHandle failed with error % (%)", err, msg );
+                }
+                else
+                {
+                    log( "##### Got provider handle: 0x%\n", formatHex( globalProviderSessionHandle ) );
+                }
+            }
+            case .WMI_DISABLE_EVENTS;
+            {
+
+            }
+        }
+
+        return status;
+    }
+}
