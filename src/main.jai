@@ -19,6 +19,7 @@ LPWSTR :: *u16;
 
 ERROR_SUCCESS                       :: 0;
 ERROR_INVALID_PARAMETER             :: 87;
+ERROR_CTX_CLOSE_PENDING             :: 7007;
 
 // TODO I'm not sure why this doesnt compile
 // INVALID_PROCESSTRACE_HANDLE :: cast(TRACEHANDLE) INVALID_HANDLE_VALUE;
@@ -26,7 +27,9 @@ ERROR_INVALID_PARAMETER             :: 87;
 EVENT_TRACE_CONTROL_STOP            :: 1;
 EVENT_TRACE_FLAG_THREAD             :: 0x00000002;  // thread start & end
 EVENT_TRACE_FLAG_CSWITCH            :: 0x00000010;  // context switches
+EVENT_TRACE_FLAG_SYSTEMCALL         :: 0x00000080;  // system calls
 EVENT_TRACE_FLAG_MEMORY_PAGE_FAULTS :: 0x00001000;  // all page faults
+EVENT_TRACE_FLAG_NO_SYSCONFIG       :: 0x10000000;  // Do not do sys config rundown
 EVENT_TRACE_REAL_TIME_MODE          :: 0x00000100;  // Real time mode on
 EVENT_TRACE_SYSTEM_LOGGER_MODE      :: 0x02000000;  // Receive events from SystemTraceProvider
 PROCESS_TRACE_MODE_REAL_TIME        :: 0x00000100;
@@ -162,7 +165,7 @@ EVENT_TRACE_HEADER :: struct
     union
     {
         Version:           ULONG;
-        Class ::struct
+        Class: struct
         {
             Type:          UCHAR;         // event type
             Level:         UCHAR;         // trace instrumentation level
@@ -443,6 +446,7 @@ WMIDPREQUESTCODE :: enum
     WMI_CAPTURE_STATE :: 10;
 }
 
+NtQueryPerformanceCounterType :: #type ( PerformanceCounter: *LARGE_INTEGER, PerformanceFrequency: *LARGE_INTEGER ) -> NTSTATUS #c_call;
 PEVENT_CALLBACK               :: #type ( Event: PEVENT_TRACE ) #c_call;
 PEVENT_RECORD_CALLBACK        :: #type ( EventRecord: *EVENT_RECORD ) #c_call;
 PEVENT_TRACE_BUFFER_CALLBACKW :: #type ( LogFile: PEVENT_TRACE_LOGFILEW ) -> ULONG #c_call;
@@ -460,6 +464,7 @@ RegisterTraceGuidsW       :: ( RequestAddress: WMIDPREQUEST, RequestContext: *vo
 TraceEvent                :: ( TraceHandle: TRACEHANDLE, EventTrace: *EVENT_TRACE_HEADER ) -> ULONG #foreign advapi32;
 GetTraceLoggerHandle      :: ( Buffer: *void ) -> TRACEHANDLE #foreign advapi32;
 EnableTrace               :: ( Enable: ULONG, EnableFlag: ULONG, EnableLevel: ULONG, ControlGuid: *GUID, TraceHandle: TRACEHANDLE ) -> ULONG #foreign advapi32;
+CloseTrace                :: ( TraceHandle: TRACEHANDLE ) -> ULONG #foreign advapi32;
 
 DefineGUID :: ( l: u32, w1: u16, w2: u16, b1: u8, b2: u8, b3: u8, b4: u8, b5: u8, b6: u8, b7: u8, b8: u8 ) -> GUID #expand
 {
@@ -480,6 +485,14 @@ ThreadGuid :: #run DefineGUID(
     0xfe05,
     0x11d0,
     0x9d, 0xda, 0x00, 0xc0, 0x4f, 0xd7, 0xba, 0x7c
+);
+
+/* ce1dbfb4-137e-4da6-87b0-3f59aa102cbc */
+PerfInfoGuid :: #run DefineGUID(
+    0xce1dbfb4,
+    0x137e,
+    0x4da6,
+    0x87, 0xb0, 0x3f, 0x59, 0xaa, 0x10, 0x2c, 0xbc
 );
 
 // {5E60DAA3-471D-49B2-B608-B1FF493AE160}
@@ -503,13 +516,25 @@ globalProviderSessionHandle: TRACEHANDLE;
 
 main :: ()
 {
-    #if false
+    USE_KERNEL_LOGGER :: false;
+
+    #if USE_KERNEL_LOGGER
     {
         kernelLoggerName, ok, kernelLoggerNameSize := utf8_to_wide_new( KERNEL_LOGGER_NAMEA,, temp );
-        assert( ok );
+        instanceName := kernelLoggerName;
+    }
+    else
+    {
+        instanceName, ok := utf8_to_wide_new( "SadgeETW",, temp );
+    }
+    assert( ok );
 
-        propsBufferSize := size_of(EVENT_TRACE_PROPERTIES) + kernelLoggerNameSize + 2;
-        props := cast(*EVENT_TRACE_PROPERTIES) alloc( propsBufferSize );
+
+    propsBufferSize := size_of(EVENT_TRACE_PROPERTIES) + 128;
+    props := cast(*EVENT_TRACE_PROPERTIES) alloc( propsBufferSize );
+
+    #if false
+    {
         memset( props, 0, propsBufferSize );
         // We still need to manually copy this ourselves to be able to call ControlTrace
         memcpy( cast(*u8)props + size_of(EVENT_TRACE_PROPERTIES), kernelLoggerName, kernelLoggerNameSize + 2 );
@@ -529,84 +554,94 @@ main :: ()
             log_error( "ControlTraceW failed with error % (%)", status, msg );
             // exit( 1 );
         }
+    }
 
+    #if true
+    {
         memset( props, 0, propsBufferSize );
         props.LoggerNameOffset = size_of(EVENT_TRACE_PROPERTIES);
         // TODO How do we indicate that we want to listen for the events we will emit with TraceEvent!?
-        props.EnableFlags = 0; //EVENT_TRACE_FLAG_CSWITCH; // | EVENT_TRACE_FLAG_MEMORY_PAGE_FAULTS;
-        props.LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
+        props.EnableFlags = EVENT_TRACE_FLAG_NO_SYSCONFIG | EVENT_TRACE_FLAG_SYSTEMCALL; // EVENT_TRACE_FLAG_CSWITCH; // |   // | EVENT_TRACE_FLAG_MEMORY_PAGE_FAULTS;
+        // props.LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
+        props.LogFileMode = EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_SYSTEM_LOGGER_MODE;
         props.Wnode.BufferSize = xx propsBufferSize;
         props.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
         // Timestamps from QueryPerformanceCounter
         props.Wnode.ClientContext = 1;
-        props.Wnode.Guid = SystemTraceControlGuid;
+        // props.Wnode.Guid = SystemTraceControlGuid;
     }
 
-    sessionProps: struct
+    #if false
     {
-        Properties: EVENT_TRACE_PROPERTIES_V2;
-        LoggerName: [128]WCHAR;
-    };
+        sessionProps: struct
+        {
+            Properties: EVENT_TRACE_PROPERTIES_V2;
+            LoggerName: [128]WCHAR;
+        };
 
-	// ZeroMemory(&sessionProps, size_of(sessionProps));
-    props2 := *sessionProps.Properties;
-	props2.Wnode.BufferSize = size_of( type_of( sessionProps ) );
-    // Timestamps from QueryPerformanceCounter
-    // props2.Wnode.ClientContext = 1;
-    // Timestamps from CPU cycle counter
-	props2.Wnode.ClientContext = 3;
-	props2.Wnode.Flags = WNODE_FLAG_TRACED_GUID | WNODE_FLAG_VERSIONED_PROPERTIES;
-	props2.LogFileMode = EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_SYSTEM_LOGGER_MODE;
-	props2.VersionNumber = 2;
-    props2.EnableFlags = 0; //EVENT_TRACE_FLAG_CSWITCH; // | EVENT_TRACE_FLAG_MEMORY_PAGE_FAULTS;
-	props2.LoggerNameOffset = size_of( type_of( sessionProps.Properties ) );
+        memset( *sessionProps, 0, size_of( type_of( sessionProps ) ) );
+        props2 := *sessionProps.Properties;
+        props2.Wnode.BufferSize = size_of( type_of( sessionProps ) );
+        // Timestamps from QueryPerformanceCounter
+        // props2.Wnode.ClientContext = 1;
+        // Timestamps from CPU cycle counter
+        props2.Wnode.ClientContext = 3;
+        props2.Wnode.Flags = WNODE_FLAG_TRACED_GUID | WNODE_FLAG_VERSIONED_PROPERTIES;
+        props2.LogFileMode = EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_SYSTEM_LOGGER_MODE;
+        props2.VersionNumber = 2;
+        props2.EnableFlags = EVENT_TRACE_FLAG_CSWITCH; // EVENT_TRACE_FLAG_SYSTEMCALL | EVENT_TRACE_FLAG_MEMORY_PAGE_FAULTS;
+        // props2.LoggerNameOffset = size_of( type_of( sessionProps ) );
+        props2.LoggerNameOffset = size_of( type_of( sessionProps.Properties ) );
+    }
+
+    
+    // TODO First execution after a reboot shows context switches, but any other runs after that dont!!
+    // TODO Put a time limit on the main thread wait and ensure we're properly shutting down everything!?
+
+
+    // TODO Defer Cleanup()
 
     sessionHandle: TRACEHANDLE;
-    instanceName, ok := utf8_to_wide_new( "SadgeETW",, temp );
-    assert( ok );
+    status := StartTraceW( *sessionHandle, instanceName, xx props );
+    if status == ERROR_ALREADY_EXISTS
+    {
+        // stop existing trace in case it is already running
+        status = ControlTraceW( 0, instanceName, xx props, EVENT_TRACE_CONTROL_STOP );
+        assert( status == ERROR_SUCCESS || status == ERROR_MORE_DATA );
 
-    // status = StartTraceW( *sessionHandle, kernelLoggerName, props );
-    status := StartTraceW( *sessionHandle, instanceName, xx props2 );
+        status = StartTraceW( *sessionHandle, instanceName, xx props );
+    }
     if status != ERROR_SUCCESS
     {
-        if status == ERROR_ALREADY_EXISTS
-        {
-            // stop existing trace in case it is already running
-            status = ControlTraceW( 0, instanceName, xx props2, EVENT_TRACE_CONTROL_STOP );
-            assert( status == ERROR_SUCCESS || status == ERROR_MORE_DATA );
+        msg := get_error_string( xx status );
+        log_error( "StartTraceW failed with error % (%)", status, msg );
+        exit( 1 );
+    }
 
-            status = StartTraceW( *sessionHandle, instanceName, xx props2 );
-        }
 
+    #if false
+    {
+        // TODO Do we need this crap after all?
+        eventClassGuids := TRACE_GUID_REGISTRATION.[
+            .{ *MyEventGuid, null }
+        ];
+        providerRegistrationHandle: TRACEHANDLE;
+        status = RegisterTraceGuidsW( MyProviderControlCallback, null, *MyProviderGuid, eventClassGuids.count, eventClassGuids.data,
+        null, null, *providerRegistrationHandle );
         if status != ERROR_SUCCESS
         {
             msg := get_error_string( xx status );
-            log_error( "StartTraceW failed with error % (%)", status, msg );
+            log_error( "RegisterTraceGuidsW failed with error % (%)", status, msg );
             exit( 1 );
         }
-    }
 
-
-    // TODO Do we need this crap after all?
-    eventClassGuids := TRACE_GUID_REGISTRATION.[
-        .{ *MyEventGuid, null }
-    ];
-    providerRegistrationHandle: TRACEHANDLE;
-    status = RegisterTraceGuidsW( MyProviderControlCallback, null, *MyProviderGuid, eventClassGuids.count, eventClassGuids.data,
-                                  null, null, *providerRegistrationHandle );
-    if status != ERROR_SUCCESS
-    {
-        msg := get_error_string( xx status );
-        log_error( "RegisterTraceGuidsW failed with error % (%)", status, msg );
-        exit( 1 );
-    }
-
-    status = EnableTrace( 1, 1, 1, *MyProviderGuid, sessionHandle );
-    if status != ERROR_SUCCESS
-    {
-        msg := get_error_string( xx status );
-        log_error( "EnableTrace failed with error % (%) / handle is: 0x%", status, msg, formatHex( sessionHandle ) );
-        exit( 1 );
+        status = EnableTrace( 1, 1, 1, *MyProviderGuid, sessionHandle );
+        if status != ERROR_SUCCESS
+        {
+            msg := get_error_string( xx status );
+            log_error( "EnableTrace failed with error % (%) / handle is: 0x%", status, msg, formatHex( sessionHandle ) );
+            exit( 1 );
+        }
     }
 
 
@@ -645,7 +680,7 @@ main :: ()
     if status != ERROR_SUCCESS
     {
         msg := get_error_string( xx status );
-        log_error( "TraceSetInformation failed with error % (%)", status, msg );
+        log_error( "TraceSetInformation(1) failed with error % (%)", status, msg );
         exit( 1 );
     }
 
@@ -654,34 +689,36 @@ main :: ()
     // https://learn.microsoft.com/en-us/windows/win32/etw/thread-v2
     threadEventId :: CLASSIC_EVENT_ID.{
         ThreadGuid,
-        1, // Thread start
+        // 1, // Thread start
         // 3, // Enumerate threads
-        // ? - Context switches
+        0x24, // ? - Context switches
         .[0,0,0,0,0,0,0]
     };
-     // TODO Why doesnt it like this??
-    myEventId :: CLASSIC_EVENT_ID.{
-        MyEventGuid,
-        1,
+    perfInfoEventId :: CLASSIC_EVENT_ID.{
+        PerfInfoGuid,
+        52, // SysCallExit
         .[0,0,0,0,0,0,0]
     };
 
-    EventIds :: CLASSIC_EVENT_ID.[ myEventId ];    
+    EventIds :: CLASSIC_EVENT_ID.[ perfInfoEventId ];    
     status = TraceSetInformation( sessionHandle, .TracePmcEventListInfo, EventIds.data, EventIds.count * size_of(CLASSIC_EVENT_ID) );
     if status != ERROR_SUCCESS
     {
         msg := get_error_string( xx status );
-        log_error( "TraceSetInformation failed with error % (%)", status, msg );
+        log_error( "TraceSetInformation(2) failed with error % (%)", status, msg );
         exit( 1 );
     }
 
 
 
+    // log( "##### Opening session for '%'..\n", wide_to_utf8_new( sessionProps.LoggerName.data,, temp ) );
+    log( "##### Opening session for '%'..\n", wide_to_utf8_new( instanceName,, temp ) );
+
     logFile: EVENT_TRACE_LOGFILEW;
-    // logFile.LoggerName = kernelLoggerName;
+    // logFile.LoggerName = sessionProps.LoggerName.data;
     logFile.LoggerName = instanceName;
-    logFile.ProcessTraceMode = (PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD | PROCESS_TRACE_MODE_RAW_TIMESTAMP);
     logFile.EventRecordCallback = MyEventRecordCallback;
+    logFile.ProcessTraceMode = (PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD | PROCESS_TRACE_MODE_RAW_TIMESTAMP);
 
     traceHandle := OpenTraceW( *logFile );
     if traceHandle == cast(TRACEHANDLE) INVALID_HANDLE_VALUE //INVALID_PROCESSTRACE_HANDLE
@@ -692,15 +729,15 @@ main :: ()
     }
 
 
-    tracingThread: Thread;
-    tracingThread.data = xx traceHandle;
+    processingThread: Thread;
+    processingThread.data = xx traceHandle;
 
-    if !thread_init( *tracingThread, ThreadProc )
+    if !thread_init( *processingThread, ProcessingThreadProc )
     {
-        log_error( "Failed to create tracing thread!" );
+        log_error( "Failed to create processing thread!" );
         exit( 1 );
     }
-    thread_start( *tracingThread );
+    thread_start( *processingThread );
 
 
     MyEvent :: struct
@@ -708,39 +745,90 @@ main :: ()
         Header: EVENT_TRACE_HEADER;
     }
 
-    myEvent: MyEvent;
-    myEvent.Header.Size = size_of(EVENT_TRACE_HEADER);
-    myEvent.Header.Flags = WNODE_FLAG_TRACED_GUID; // | WNODE_FLAG_USE_MOF_PTR;
-    myEvent.Header.Guid = MyEventGuid;
-    // myEvent.Header.Class.Type = MY_EVENT_TYPE;
-    // myEvent.Header.Class.Version = 1;
-    // myEvent.Header.Class.Level = g_EnableLevel;
-
-    status = TraceEvent( sessionHandle, xx *myEvent );
-    if status != ERROR_SUCCESS
+    #if true
     {
-        msg := get_error_string( xx status );
-        log_error( "TraceEvent failed with error % (%) / handle is: 0x%", status, msg, formatHex( sessionHandle ) );
-        exit( 1 );
+        myEvent: MyEvent;
+        myEvent.Header.Size = size_of(EVENT_TRACE_HEADER);
+        myEvent.Header.Flags = WNODE_FLAG_TRACED_GUID; // | WNODE_FLAG_USE_MOF_PTR;
+        myEvent.Header.Guid = MyEventGuid;
+        // myEvent.Header.Class.Type = MY_EVENT_TYPE;
+        myEvent.Header.Class.Type = 1;
+        // myEvent.Header.Class.Version = 1;
+        // myEvent.Header.Class.Level = g_EnableLevel;
+
+        status = TraceEvent( sessionHandle, xx *myEvent );
+        if status != ERROR_SUCCESS
+        {
+            msg := get_error_string( xx status );
+            log_error( "TraceEvent failed with error % (%) / handle is: 0x%", status, msg, formatHex( sessionHandle ) );
+            exit( 1 );
+        }
     }
 
+    #if false
+    {
+        ntdll := LoadLibraryA( "ntdll.dll" );
+        if ntdll == null
+        {
+            log_error( "Failed loading library ntdll.dll!" );
+            exit( 1 );
+        }
+        NtQueryPerformanceCounter: NtQueryPerformanceCounterType = GetProcAddress( ntdll, "NtQueryPerformanceCounter" );
+        if NtQueryPerformanceCounter == null
+        {
+            log_error( "Failed loading entry point for NtQueryPerformanceCounter!" );
+            exit( 1 );
+        }
 
-    // Wait for it to finish
-    while !thread_is_done( *tracingThread, -1 )
-    {}
+        // while true
+        {
+            pc, freq: LARGE_INTEGER;
+            NtQueryPerformanceCounter( *pc, *freq );
 
-    thread_deinit( *tracingThread );
+            log( ">>> Counter: %\n", pc.QuadPart );
+        }
 
-    status = ControlTraceW( 0, instanceName, xx *sessionProps, EVENT_TRACE_CONTROL_STOP );
+
+        lolThread: Thread;
+        if !thread_init( *lolThread, LolThreadProc )
+        {
+            log_error( "Failed to create lol thread!" );
+            exit( 1 );
+        }
+        thread_start( *lolThread );
+    }
+
+    Sleep( 1000 );
+
+    log( "Closing trace...\n" );
+
+    // stop producing new events
+    status = ControlTraceW( sessionHandle, null, xx props, EVENT_TRACE_CONTROL_STOP );
     if status != ERROR_SUCCESS
     {
         msg := get_error_string( xx status );
         log_error( "ControlTraceW failed with error % (%)", status, msg );
-        exit( 1 );
+        // exit( 1 );
     }
+
+    // closes trace processing, this will make ETW to process all the pending events in buffers
+    status = CloseTrace( traceHandle );
+    if status != ERROR_SUCCESS && status != ERROR_CTX_CLOSE_PENDING
+    {
+        msg := get_error_string( xx status );
+        log_error( "CloseTrace failed with error % (%)", status, msg );
+        // exit( 1 );
+    }
+
+    // Wait for thread to finish
+    while !thread_is_done( *processingThread, -1 )
+    {}
+    thread_deinit( *processingThread );
+
+    log( "OK" );
 }
 
-ThreadProc :: ( thread: *Thread ) -> s64
+ProcessingThreadProc :: ( thread: *Thread ) -> s64
 {
     traceHandle := cast(TRACEHANDLE) thread.data;
 
@@ -757,6 +845,17 @@ ThreadProc :: ( thread: *Thread ) -> s64
     return 0;
 }
 
+LolThreadProc :: ( thread: *Thread ) -> s64
+{
+    total: u64;
+    while ( true )
+    {
+        total += 236;
+        // print( "New total: %\n", total );
+    }
+
+    return 0;
+}
 
 GetEventProcessorIndex :: ( eventRecord: *EVENT_RECORD ) -> ULONG
 {
