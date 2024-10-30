@@ -1,2 +1,3 @@
-jai src\main.jai
+@echo off
+jai build.jai - %*
 
