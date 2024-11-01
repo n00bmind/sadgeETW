@@ -52,6 +52,11 @@ MapPMCCounters :: ( counterNames: []string ) -> []Counter
     return counters;
 }
 
+ETWCoreState :: struct
+{
+    
+}
+
 ETWSession :: struct
 {
     processingThread: Thread;
@@ -193,6 +198,8 @@ InitETWSession :: ( counters: []Counter, sessionOut: *ETWSession ) -> bool
         return false;
     }
     thread_start( *sessionOut.processingThread );
+
+    return true;
 }
 
 ShutdownETWSession :: ( session: *ETWSession )
@@ -210,6 +217,8 @@ ShutdownETWSession :: ( session: *ETWSession )
             log_error( "ControlTraceW failed with error % (%)", status, msg );
         }
     }
+
+    // TODO Ensure we wait here for the processing thread to see all the events we care about
 
     // closes trace processing, this will make ETW to process all the pending events in buffers
     if session.traceHandle
@@ -233,6 +242,56 @@ ShutdownETWSession :: ( session: *ETWSession )
     free( session.properties );
     <<session = .{};
 }
+
+
+formatHex :: #bake_arguments formatInt(base = 16, padding = #char "0");
+
+ZoneEvent :: struct
+{
+    Header: EVENT_TRACE_HEADER;
+}
+
+BeginETWZone :: ( session: *ETWSession )
+{
+    beginEvent: ZoneEvent;
+    beginEvent.Header.Size = size_of(EVENT_TRACE_HEADER);
+    beginEvent.Header.Flags = WNODE_FLAG_TRACED_GUID; // | WNODE_FLAG_USE_MOF_PTR;
+    beginEvent.Header.Guid = ZoneEventGuid;
+    // beginEvent.Header.Class.Type = MY_EVENT_TYPE;
+    beginEvent.Header.Class.Type = 1;
+    // beginEvent.Header.Class.Version = 1;
+    // beginEvent.Header.Class.Level = g_EnableLevel;
+
+    status := TraceEvent( session.sessionHandle, xx *beginEvent );
+    if status != ERROR_SUCCESS
+    {
+        msg := get_error_string( xx status );
+        log_error( "TraceEvent failed with error % (%) / handle is: 0x%", status, msg, formatHex( session.sessionHandle ) );
+        // TODO Track which zones had errors?
+    }
+}
+
+EndETWZone :: ( session: *ETWSession )
+{
+    endEvent: ZoneEvent;
+    endEvent.Header.Size = size_of(EVENT_TRACE_HEADER);
+    endEvent.Header.Flags = WNODE_FLAG_TRACED_GUID; // | WNODE_FLAG_USE_MOF_PTR;
+    endEvent.Header.Guid = ZoneEventGuid;
+    // endEvent.Header.Class.Type = MY_EVENT_TYPE;
+    endEvent.Header.Class.Type = 0;
+    // endEvent.Header.Class.Version = 1;
+    // endEvent.Header.Class.Level = g_EnableLevel;
+
+    status := TraceEvent( session.sessionHandle, xx *endEvent );
+    if status != ERROR_SUCCESS
+    {
+        msg := get_error_string( xx status );
+        log_error( "TraceEvent failed with error % (%) / handle is: 0x%", status, msg, formatHex( session.sessionHandle ) );
+        // TODO Track which zones had errors?
+    }
+}
+
+#scope_file
 
 ProcessingThreadProc :: ( thread: *Thread ) -> s64
 {

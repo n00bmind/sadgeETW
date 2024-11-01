@@ -492,7 +492,7 @@ PerfInfoGuid :: #run DefineGUID(
 );
 
 // {5E60DAA3-471D-49B2-B608-B1FF493AE160}
-MyEventGuid :: #run DefineGUID(
+ZoneEventGuid :: #run DefineGUID(
     0x5e60daa3,
     0x471d,
     0x49b2,

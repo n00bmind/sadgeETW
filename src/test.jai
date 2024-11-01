@@ -49,8 +49,8 @@ END
 
 // Skylake+ can have 4 generic counters + 3 fixed (cycles, instructions, refcycles)
 IntelCounters :: string.[
-	"UnhaltedCoreCyclesFixed",
-	"InstructionsRetiredFixed",
+	// "UnhaltedCoreCyclesFixed",
+	// "InstructionsRetiredFixed",
 	"BranchMispredictions",
 	"BranchInstructions",
 	// on Intel can use L3 cache counters
@@ -138,7 +138,11 @@ main :: ()
     // Apparently required by a macro in the meow_hash module
     Len := cast(u64) TestSample.count;
 
+    BeginETWZone( *traceSession );
+
     MeowHash( MeowDefaultSeed, Len, TestSample.data, Hash );
+
+    EndETWZone( *traceSession );
     
     t1 := seconds_since_init();
 

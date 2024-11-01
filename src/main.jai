@@ -123,7 +123,7 @@ main :: ()
     {
         // TODO Do we need this crap after all?
         eventClassGuids := TRACE_GUID_REGISTRATION.[
-            .{ *MyEventGuid, null }
+            .{ *ZoneEventGuid, null }
         ];
         providerRegistrationHandle: TRACEHANDLE;
         status = RegisterTraceGuidsW( MyProviderControlCallback, null, *MyProviderGuid, eventClassGuids.count, eventClassGuids.data,
@@ -250,7 +250,7 @@ main :: ()
         myEvent: MyEvent;
         myEvent.Header.Size = size_of(EVENT_TRACE_HEADER);
         myEvent.Header.Flags = WNODE_FLAG_TRACED_GUID; // | WNODE_FLAG_USE_MOF_PTR;
-        myEvent.Header.Guid = MyEventGuid;
+        myEvent.Header.Guid = ZoneEventGuid;
         // myEvent.Header.Class.Type = MY_EVENT_TYPE;
         myEvent.Header.Class.Type = 1;
         // myEvent.Header.Class.Version = 1;
