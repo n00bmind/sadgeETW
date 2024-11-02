@@ -31,6 +31,7 @@ EVENT_TRACE_SYSTEM_LOGGER_MODE      :: 0x02000000;  // Receive events from Syste
 PROCESS_TRACE_MODE_REAL_TIME        :: 0x00000100;
 PROCESS_TRACE_MODE_RAW_TIMESTAMP    :: 0x00001000;
 PROCESS_TRACE_MODE_EVENT_RECORD     :: 0x10000000;
+EVENT_HEADER_EXT_TYPE_PMC_COUNTERS  :: 0x0008;
 EVENT_HEADER_FLAG_PROCESSOR_INDEX   :: 0x0200;
 
 WNODE_FLAG_TRACED_GUID              :: 0x00020000; // denotes a trace
@@ -269,7 +270,6 @@ EVENT_HEADER_EXTENDED_DATA_ITEM :: struct
     DataSize:    USHORT;    // Size of extended info data
     DataPtr:     ULONGLONG; // Pointer to extended info data
 } 
-PEVENT_HEADER_EXTENDED_DATA_ITEM :: *EVENT_HEADER_EXTENDED_DATA_ITEM;
 
 EVENT_RECORD :: struct
 {
@@ -277,7 +277,7 @@ EVENT_RECORD :: struct
     BufferContext:     ETW_BUFFER_CONTEXT;               // Buffer context
     ExtendedDataCount: USHORT;                           // Number of extended data items
     UserDataLength:    USHORT;                           // User data length
-    ExtendedData:      PEVENT_HEADER_EXTENDED_DATA_ITEM; // Pointer to an array of extended data items
+    ExtendedData:      *EVENT_HEADER_EXTENDED_DATA_ITEM; // Pointer to an array of extended data items
     UserData:          PVOID;                            // Pointer to user data
     UserContext:       PVOID;                            // Context from OpenTrace
 }
@@ -490,13 +490,6 @@ PerfInfoGuid :: #run DefineGUID(
     0x4da6,
     0x87, 0xb0, 0x3f, 0x59, 0xaa, 0x10, 0x2c, 0xbc
 );
-
-// {5E60DAA3-471D-49B2-B608-B1FF493AE160}
-ZoneEventGuid :: #run DefineGUID(
-    0x5e60daa3,
-    0x471d,
-    0x49b2,
-    0xb6, 0x8, 0xb1, 0xff, 0x49, 0x3a, 0xe1, 0x60
-);
-
+SysCallEnterOpCode :: 51;
+SysCallExitOpCode :: 52;
 

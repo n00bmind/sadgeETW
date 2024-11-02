@@ -59,6 +59,7 @@ ETWCoreState :: struct
 
 ETWSession :: struct
 {
+    counters: []Counter;
     processingThread: Thread;
     properties: *EVENT_TRACE_PROPERTIES;
     sessionHandle: TRACEHANDLE;
@@ -67,6 +68,8 @@ ETWSession :: struct
 
 InitETWSession :: ( counters: []Counter, sessionOut: *ETWSession ) -> bool
 {
+    sessionOut.counters = counters;
+
     instanceName, ok := utf8_to_wide_new( "SadgeETW",, temp );
     assert( ok );
 
@@ -126,7 +129,7 @@ InitETWSession :: ( counters: []Counter, sessionOut: *ETWSession ) -> bool
 
 
     // Set up PMCs of interest
-    counterIds := NewArray( counters.count, ULONG );
+    counterIds := NewArray( counters.count, ULONG,, temp );
     for * counterIds
     {
         <<it = counters[it_index].sourceIndex;
@@ -145,12 +148,12 @@ InitETWSession :: ( counters: []Counter, sessionOut: *ETWSession ) -> bool
 
     SyscallEnterId :: CLASSIC_EVENT_ID.{
         PerfInfoGuid,
-        51, // SysCallEnter
+        SysCallEnterOpCode,
         .[0,0,0,0,0,0,0]
     };
     SyscallExitId :: CLASSIC_EVENT_ID.{
         PerfInfoGuid,
-        52, // SysCallExit
+        SysCallExitOpCode,
         .[0,0,0,0,0,0,0]
     };
 
@@ -176,6 +179,8 @@ InitETWSession :: ( counters: []Counter, sessionOut: *ETWSession ) -> bool
     logFile.LoggerName = instanceName;
     logFile.EventRecordCallback = EventRecordCallback;
     logFile.ProcessTraceMode = (PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD | PROCESS_TRACE_MODE_RAW_TIMESTAMP);
+    // FIXME Not great, if the user copies its session struct to somewhere for storage, this becomes invalid!
+    logFile.Context = sessionOut;
 
     traceHandle := OpenTraceW( *logFile );
     if traceHandle == cast(TRACEHANDLE) INVALID_HANDLE_VALUE //INVALID_PROCESSTRACE_HANDLE
@@ -204,6 +209,10 @@ InitETWSession :: ( counters: []Counter, sessionOut: *ETWSession ) -> bool
 
 ShutdownETWSession :: ( session: *ETWSession )
 {
+    // Ensure the processing has already started, otherwise we won't ever have the chance do any processing at all!
+    while !globalProcessingStarted
+        Sleep( 10 );
+
     log( "Closing ETW session...\n" );
 
     status: ULONG;
@@ -217,8 +226,6 @@ ShutdownETWSession :: ( session: *ETWSession )
             log_error( "ControlTraceW failed with error % (%)", status, msg );
         }
     }
-
-    // TODO Ensure we wait here for the processing thread to see all the events we care about
 
     // closes trace processing, this will make ETW to process all the pending events in buffers
     if session.traceHandle
@@ -246,23 +253,33 @@ ShutdownETWSession :: ( session: *ETWSession )
 
 formatHex :: #bake_arguments formatInt(base = 16, padding = #char "0");
 
-ZoneEvent :: struct
+ZoneMakerEvent :: struct
 {
-    Header: EVENT_TRACE_HEADER;
+    header: EVENT_TRACE_HEADER;
+    UserData :: struct
+    {
+        zoneEnter: bool;
+    }
+    userData: UserData;
 }
+
+// {5E60DAA3-471D-49B2-B608-B1FF493AE160}
+ZoneMarkerEventGuid :: #run DefineGUID(
+    0x5e60daa3,
+    0x471d,
+    0x49b2,
+    0xb6, 0x8, 0xb1, 0xff, 0x49, 0x3a, 0xe1, 0x60
+);
 
 BeginETWZone :: ( session: *ETWSession )
 {
-    beginEvent: ZoneEvent;
-    beginEvent.Header.Size = size_of(EVENT_TRACE_HEADER);
-    beginEvent.Header.Flags = WNODE_FLAG_TRACED_GUID; // | WNODE_FLAG_USE_MOF_PTR;
-    beginEvent.Header.Guid = ZoneEventGuid;
-    // beginEvent.Header.Class.Type = MY_EVENT_TYPE;
-    beginEvent.Header.Class.Type = 1;
-    // beginEvent.Header.Class.Version = 1;
-    // beginEvent.Header.Class.Level = g_EnableLevel;
+    enterEvent: ZoneMakerEvent;
+    enterEvent.header.Size = size_of(ZoneMakerEvent);
+    enterEvent.header.Flags = WNODE_FLAG_TRACED_GUID; // | WNODE_FLAG_USE_MOF_PTR;
+    enterEvent.header.Guid = ZoneMarkerEventGuid;
+    enterEvent.userData.zoneEnter = true;
 
-    status := TraceEvent( session.sessionHandle, xx *beginEvent );
+    status := TraceEvent( session.sessionHandle, xx *enterEvent );
     if status != ERROR_SUCCESS
     {
         msg := get_error_string( xx status );
@@ -273,16 +290,13 @@ BeginETWZone :: ( session: *ETWSession )
 
 EndETWZone :: ( session: *ETWSession )
 {
-    endEvent: ZoneEvent;
-    endEvent.Header.Size = size_of(EVENT_TRACE_HEADER);
-    endEvent.Header.Flags = WNODE_FLAG_TRACED_GUID; // | WNODE_FLAG_USE_MOF_PTR;
-    endEvent.Header.Guid = ZoneEventGuid;
-    // endEvent.Header.Class.Type = MY_EVENT_TYPE;
-    endEvent.Header.Class.Type = 0;
-    // endEvent.Header.Class.Version = 1;
-    // endEvent.Header.Class.Level = g_EnableLevel;
+    exitEvent: ZoneMakerEvent;
+    exitEvent.header.Size = size_of(ZoneMakerEvent);
+    exitEvent.header.Flags = WNODE_FLAG_TRACED_GUID; // | WNODE_FLAG_USE_MOF_PTR;
+    exitEvent.header.Guid = ZoneMarkerEventGuid;
+    exitEvent.userData.zoneEnter = false;
 
-    status := TraceEvent( session.sessionHandle, xx *endEvent );
+    status := TraceEvent( session.sessionHandle, xx *exitEvent );
     if status != ERROR_SUCCESS
     {
         msg := get_error_string( xx status );
@@ -293,11 +307,18 @@ EndETWZone :: ( session: *ETWSession )
 
 #scope_file
 
+// TODO Use atomics
+globalProcessingStarted := false;
+globalProcessedEventCount: int;
+globalCurrentZoneThreadId: ULONG;
+globalStartCounterData: []u64;
+globalLastCounterData: []u64;
+
 ProcessingThreadProc :: ( thread: *Thread ) -> s64
 {
     traceHandle := cast(TRACEHANDLE) thread.data;
 
-    log( "##### Beginning of ProcessTrace output:\n" );
+    log( "\n##### Beginning of ProcessTrace output:\n" );
     status := ProcessTrace( *traceHandle, 1, null, null );
     if status != ERROR_SUCCESS
     {
@@ -305,7 +326,8 @@ ProcessingThreadProc :: ( thread: *Thread ) -> s64
         log_error( "ERROR! ProcessTrace failed with error % (%)", status, msg );
     }
 
-    log( "ProcessTrace DONE\n" );
+    globalProcessingStarted = true;
+    log( "ProcessTrace exited (% events processed)\n", globalProcessedEventCount );
     return 0;
 }
 
@@ -318,22 +340,92 @@ GetEventProcessorIndex :: ( eventRecord: *EVENT_RECORD ) -> ULONG
         return eventRecord.BufferContext.ProcessorNumber;
 }
 
-globalProcessedEventCount: int;
 EventRecordCallback :: ( eventRecord: *EVENT_RECORD ) #c_call
 {
     ctx: Context;
     push_context ctx
     {
+        // NOTE All traces seem to get some initial system events
+        globalProcessingStarted = true;
+
         header := eventRecord.EventHeader;
 
-        ProcessorNumber : = GetEventProcessorIndex( eventRecord );
-        ThreadId: ULONG  = header.ThreadId;
+        processorNumber : = GetEventProcessorIndex( eventRecord );
+        threadId: ULONG  = header.ThreadId;
         timeCycles: s64 = header.TimeStamp.QuadPart;
 
-        // Process event here.
+        session := cast(*ETWSession) eventRecord.UserContext;
+
+        if header.ProviderId == ZoneMarkerEventGuid
+        {
+            userData := cast(*ZoneMakerEvent.UserData)eventRecord.UserData;
+
+            log( "% -> % zone for cpu % / thread %\n", timeCycles, ifx userData.zoneEnter then "Begin" else "End", processorNumber, threadId );
+            log( "    user: %, extended: %\n", eventRecord.UserDataLength, eventRecord.ExtendedDataCount );
+
+            // TODO Multiple zones / threads
+            if userData.zoneEnter
+                globalCurrentZoneThreadId = threadId;
+            else
+            {
+                globalCurrentZoneThreadId = 0;
+                for globalLastCounterData
+                    log( "    counter %: %\n", it_index, it );
+
+                log( "\n\nRESULTS:\n" );
+                for i: 0 .. session.counters.count - 1
+                    log( "'%': %\n", session.counters[i].name, globalLastCounterData[i] - globalStartCounterData[i] );
+            }
+        }
+
+        // Inside a zone, process systemcall events
+        // TODO ThreadId seems to be -1 for all these !?? arrrrghgkjskfh
+        if globalCurrentZoneThreadId /* == threadId */ && header.ProviderId == PerfInfoGuid
+        {
+            op := header.EventDescriptor.Opcode;
+
+            if op == SysCallExitOpCode && globalStartCounterData.count == 0
+            {
+                log( "% -> Syscall exit with % ext data for cpu % / thread %\n", timeCycles, eventRecord.ExtendedDataCount,
+                     processorNumber, threadId );
+
+                for i: 0 .. cast(int)eventRecord.ExtendedDataCount - 1
+                {
+                    item := eventRecord.ExtendedData + i;
+                    if item.ExtType == EVENT_HEADER_EXT_TYPE_PMC_COUNTERS
+                    {
+                        dataSize := session.counters.count * size_of(ULONG64);
+                        assert( item.DataSize == dataSize );
+
+                        globalStartCounterData = NewArray( session.counters.count, u64 );
+                        memcpy( globalStartCounterData.data, xx item.DataPtr, dataSize );
+
+                        for globalStartCounterData
+                            log( "    counter %: %\n", it_index, it );
+                    }
+                }
+            }
+            else if op == SysCallEnterOpCode
+            {
+                // log( "% -> Syscall enter with % ext data for cpu % / thread %\n", timeCycles, eventRecord.ExtendedDataCount,
+                //      processorNumber, threadId );
+
+                for i: 0 .. cast(int)eventRecord.ExtendedDataCount - 1
+                {
+                    item := eventRecord.ExtendedData + i;
+                    if item.ExtType == EVENT_HEADER_EXT_TYPE_PMC_COUNTERS
+                    {
+                        dataSize := session.counters.count * size_of(ULONG64);
+                        assert( item.DataSize == dataSize );
+
+                        if globalLastCounterData.count == 0
+                            globalLastCounterData = NewArray( session.counters.count, u64 );
+                        memcpy( globalLastCounterData.data, xx item.DataPtr, dataSize );
+                    }
+                }
+            }
+        }
+
         globalProcessedEventCount += 1;
-        // NOTE Turns out logging is very slow (at least in debug)
-        // log( "% -> New event for cpu % / thread %\n", timeCycles, ProcessorNumber, ThreadId );
-        // log( "   %, user: %, extended: %\n", ToGuidString( header.ProviderId ), eventRecord.UserDataLength, eventRecord.ExtendedDataCount );
     }
 }
