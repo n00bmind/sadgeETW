@@ -15,6 +15,7 @@ LPWSTR :: *u16;
 
 ERROR_SUCCESS                       :: 0;
 ERROR_INVALID_PARAMETER             :: 87;
+ERROR_WMI_INSTANCE_NOT_FOUND        :: 4201;
 ERROR_CTX_CLOSE_PENDING             :: 7007;
 
 // TODO I'm not sure why this doesnt compile

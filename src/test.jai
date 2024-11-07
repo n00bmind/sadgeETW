@@ -153,6 +153,7 @@ main :: ()
         formatInt(MeowU32From(Hash, 0), 16),
         (Len / (t1 - t0)) / (1024 * 1024 * 1024));
 
+    results := GetOrWaitForResults( *traceSession );
 
     ShutdownETWSession( *traceSession );
 }

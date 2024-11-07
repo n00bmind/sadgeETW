@@ -70,55 +70,44 @@ InitETWSession :: ( counters: []Counter, sessionOut: *ETWSession ) -> bool
 {
     sessionOut.counters = counters;
 
-    instanceName, ok := utf8_to_wide_new( "SadgeETW",, temp );
-    assert( ok );
-
-    propsBufferSize := size_of(EVENT_TRACE_PROPERTIES) + 128;
-    sessionOut.properties = cast(*EVENT_TRACE_PROPERTIES) alloc( propsBufferSize );
-
-    props := sessionOut.properties;
-    props.LoggerNameOffset = size_of(EVENT_TRACE_PROPERTIES);
-    props.EnableFlags = EVENT_TRACE_FLAG_NO_SYSCONFIG | EVENT_TRACE_FLAG_SYSTEMCALL; // EVENT_TRACE_FLAG_CSWITCH; // |   // | EVENT_TRACE_FLAG_MEMORY_PAGE_FAULTS;
-    props.LogFileMode = EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_SYSTEM_LOGGER_MODE;
-    props.Wnode.BufferSize = xx propsBufferSize;
-    props.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
-    // Timestamps from QueryPerformanceCounter
-    props.Wnode.ClientContext = 1;
-
-    // TODO Test V2 props
-    #if false
+    SessionProps :: struct
     {
-        sessionProps: struct
-        {
-            Properties: EVENT_TRACE_PROPERTIES_V2;
-            LoggerName: [128]WCHAR;
-        };
+        properties: EVENT_TRACE_PROPERTIES_V2;
+        name: [128]WCHAR;
+    };
 
-        props2 := *sessionProps.Properties;
-        props2.Wnode.BufferSize = size_of( type_of( sessionProps ) );
-        // Timestamps from QueryPerformanceCounter
-        // props2.Wnode.ClientContext = 1;
-        // Timestamps from CPU cycle counter
-        props2.Wnode.ClientContext = 3;
-        props2.Wnode.Flags = WNODE_FLAG_TRACED_GUID | WNODE_FLAG_VERSIONED_PROPERTIES;
-        props2.LogFileMode = EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_SYSTEM_LOGGER_MODE;
-        props2.VersionNumber = 2;
-        props2.EnableFlags = EVENT_TRACE_FLAG_CSWITCH; // EVENT_TRACE_FLAG_SYSTEMCALL | EVENT_TRACE_FLAG_MEMORY_PAGE_FAULTS;
-        // props2.LoggerNameOffset = size_of( type_of( sessionProps ) );
-        props2.LoggerNameOffset = size_of( type_of( sessionProps.Properties ) );
+    instanceName, ok, instanceNameSize := utf8_to_wide_new( "SadgeETW",, temp );
+    assert( ok && instanceNameSize <= size_of(type_of( SessionProps.name )) );
+
+    props := New( SessionProps );
+    p := *props.properties;
+    sessionOut.properties = cast(*EVENT_TRACE_PROPERTIES) p;
+
+    // Stop existing trace in case it is already running
+    p.Wnode.BufferSize = size_of( SessionProps );
+    p.LoggerNameOffset = size_of(type_of( SessionProps.properties ));
+
+    status := ControlTraceW( 0, instanceName, xx p, EVENT_TRACE_CONTROL_STOP );
+    if !(status == ERROR_SUCCESS || status == ERROR_MORE_DATA || status == ERROR_WMI_INSTANCE_NOT_FOUND)
+    {
+        msg := get_error_string( xx status );
+        log_error( "ControlTraceW returned error % (%)", status, msg );
+        return false;
     }
+
+    <<p = .{};
+    p.Wnode.BufferSize = size_of( SessionProps );
+    // Timestamps from CPU cycle counter
+    p.Wnode.ClientContext = 3;
+    p.Wnode.Flags = WNODE_FLAG_TRACED_GUID | WNODE_FLAG_VERSIONED_PROPERTIES;
+    p.VersionNumber = 2;
+    p.LoggerNameOffset = size_of(type_of( SessionProps.properties ));
+    p.LogFileMode = EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_SYSTEM_LOGGER_MODE;
+    p.EnableFlags = EVENT_TRACE_FLAG_NO_SYSCONFIG | EVENT_TRACE_FLAG_SYSTEMCALL; // EVENT_TRACE_FLAG_CSWITCH; // |   // | EVENT_TRACE_FLAG_MEMORY_PAGE_FAULTS;
 
     // Start the tracing session
     sessionHandle: TRACEHANDLE;
-    status := StartTraceW( *sessionHandle, instanceName, xx props );
-    if status == ERROR_ALREADY_EXISTS
-    {
-        // stop existing trace in case it is already running
-        status = ControlTraceW( 0, instanceName, xx props, EVENT_TRACE_CONTROL_STOP );
-        assert( status == ERROR_SUCCESS || status == ERROR_MORE_DATA );
-
-        status = StartTraceW( *sessionHandle, instanceName, xx props );
-    }
+    status = StartTraceW( *sessionHandle, instanceName, xx p );
     if status != ERROR_SUCCESS
     {
         msg := get_error_string( xx status );
@@ -128,22 +117,26 @@ InitETWSession :: ( counters: []Counter, sessionOut: *ETWSession ) -> bool
     sessionOut.sessionHandle = sessionHandle;
 
 
-    // Set up PMCs of interest
-    counterIds := NewArray( counters.count, ULONG,, temp );
-    for * counterIds
+    // TODO Why does this constantly fail on the laptop!?
+    #if true
     {
-        <<it = counters[it_index].sourceIndex;
-    }
+        // Set up PMCs of interest
+        counterIds := NewArray( counters.count, ULONG,, temp );
+        for * counterIds
+        {
+            <<it = counters[it_index].sourceIndex;
+        }
 
-    // NOTE Martins: "if this triggers ERROR_BUSY = 0xaa, then I believe that that someone else is collecting PMU counters
-    // in the system, and I'm not sure how or if at all you to forcefully stop/reconfigure it. Rebooting helps."
-    status = TraceSetInformation( sessionHandle, .TracePmcCounterListInfo, counterIds.data, cast(ULONG) (counterIds.count * size_of(ULONG)) );
-    if status != ERROR_SUCCESS
-    {
-        msg := get_error_string( xx status );
-        log_error( "TraceSetInformation(1) failed with error % (%)", status, msg );
-        ShutdownETWSession( sessionOut );
-        return false;
+        // NOTE Martins: "if this triggers ERROR_BUSY = 0xaa, then I believe that that someone else is collecting PMU counters
+        // in the system, and I'm not sure how or if at all you to forcefully stop/reconfigure it. Rebooting helps."
+        status = TraceSetInformation( sessionHandle, .TracePmcCounterListInfo, counterIds.data, cast(ULONG) (counterIds.count * size_of(ULONG)) );
+        if status != ERROR_SUCCESS
+        {
+            msg := get_error_string( xx status );
+            log_error( "TraceSetInformation(1) failed with error % (%)", status, msg );
+            ShutdownETWSession( sessionOut );
+            return false;
+        }
     }
 
     SyscallEnterId :: CLASSIC_EVENT_ID.{
@@ -209,10 +202,6 @@ InitETWSession :: ( counters: []Counter, sessionOut: *ETWSession ) -> bool
 
 ShutdownETWSession :: ( session: *ETWSession )
 {
-    // Ensure the processing has already started, otherwise we won't ever have the chance do any processing at all!
-    while !globalProcessingStarted
-        Sleep( 10 );
-
     log( "Closing ETW session...\n" );
 
     status: ULONG;
@@ -305,6 +294,19 @@ EndETWZone :: ( session: *ETWSession )
     }
 }
 
+ETWResults :: struct
+{
+
+}
+
+GetOrWaitForResults :: ( session: *ETWSession ) -> ETWResults
+{
+    // TODO 
+    Sleep( 3000 );
+
+}
+
+
 #scope_file
 
 // TODO Use atomics
@@ -324,9 +326,9 @@ ProcessingThreadProc :: ( thread: *Thread ) -> s64
     {
         msg := get_error_string( xx status );
         log_error( "ERROR! ProcessTrace failed with error % (%)", status, msg );
+        log_error( "Handle is: %\n", traceHandle );
     }
 
-    globalProcessingStarted = true;
     log( "ProcessTrace exited (% events processed)\n", globalProcessedEventCount );
     return 0;
 }
@@ -345,9 +347,6 @@ EventRecordCallback :: ( eventRecord: *EVENT_RECORD ) #c_call
     ctx: Context;
     push_context ctx
     {
-        // NOTE All traces seem to get some initial system events
-        globalProcessingStarted = true;
-
         header := eventRecord.EventHeader;
 
         processorNumber : = GetEventProcessorIndex( eventRecord );
