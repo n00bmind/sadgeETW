@@ -164,6 +164,7 @@ InitETWSession :: ( counters: []Counter, sessionOut: *ETWSession ) -> bool
     // Open the trace
     // TODO Can we set it up so we only start receiving events once at least one profiled zone is active?
     // (so we can sleep the processing thread..)
+    // TODO Presumably that thread is just suspended on a semaphore or similar?
     // log( "##### Opening session for '%'..\n", wide_to_utf8_new( sessionProps.LoggerName.data,, temp ) );
     log( "Opening ETW session for '%'..\n", wide_to_utf8_new( instanceName,, temp ) );
 
@@ -371,9 +372,14 @@ EventRecordCallback :: ( eventRecord: *EVENT_RECORD ) #c_call
                 for globalLastCounterData
                     log( "    counter %: %\n", it_index, it );
 
-                log( "\n\nRESULTS:\n" );
-                for i: 0 .. session.counters.count - 1
+                if globalLastCounterData.count && globalStartCounterData.count
+                {
+                    log( "\n\nRESULTS:\n" );
+                    for i: 0 .. session.counters.count - 1
                     log( "'%': %\n", session.counters[i].name, globalLastCounterData[i] - globalStartCounterData[i] );
+                }
+                else
+                    log( "\n\nNO RESULTS.\n" );
             }
         }
 

@@ -86,9 +86,18 @@ ARMCounters :: string.[
 
 #load "etw.jai";
 
+pmctrace_test :: #library,no_dll "pmctrace_test";
+CountNonZeroesWithBranch :: ( bufferSize: s64, buffer: *u8 ) -> s64 #foreign pmctrace_test;
+
 
 main :: ()
 {
+    buffer := u8.[ 255, 0, 0 ];
+    log( "Calling out to assembly with % bytes..", buffer.count );
+
+    nonZeroCount := CountNonZeroesWithBranch( buffer.count, buffer.data );
+    log( "Result: %", nonZeroCount );
+
     #assert OS == .WINDOWS "Only Windows supported for now";
 
     siSysInfo : SYSTEM_INFO;
