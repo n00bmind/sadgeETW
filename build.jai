@@ -64,6 +64,28 @@ build :: ()
 
         add_build_file( "src/test.jai", w );
     }
+
+    // Hogger utility
+    {
+        w := compiler_create_workspace();
+
+        options := global_options;
+        options.output_type = .EXECUTABLE;
+        options.output_executable_name = "hog";
+        // if build_release
+        // {
+        //     set_optimization( *options, .VERY_OPTIMIZED, true );
+        //     options.backend =.LLVM;
+        // }
+        // else
+        // {
+        //     set_optimization( *options, .DEBUG, true );
+        //     options.backend =.X64;
+        // }
+        set_build_options( options, w );
+
+        add_build_file( "src/hog.jai", w );
+    }
 }
 #run build();
 
