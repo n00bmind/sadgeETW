@@ -92,12 +92,6 @@ CountNonZeroesWithBranch :: ( bufferSize: s64, buffer: *u8 ) -> s64 #foreign pmc
 
 main :: ()
 {
-    buffer := u8.[ 255, 0, 0 ];
-    log( "Calling out to assembly with % bytes..", buffer.count );
-
-    nonZeroCount := CountNonZeroesWithBranch( buffer.count, buffer.data );
-    log( "Result: %", nonZeroCount );
-
     #assert OS == .WINDOWS "Only Windows supported for now";
 
     siSysInfo : SYSTEM_INFO;
@@ -147,11 +141,14 @@ main :: ()
     // Apparently required by a macro in the meow_hash module
     Len := cast(u64) TestSample.count;
 
-    BeginETWZone( *traceSession );
+    {
+        zone: ETWZone;
+        BeginETWZone( *traceSession, *zone );
 
-    MeowHash( MeowDefaultSeed, Len, TestSample.data, Hash );
+        MeowHash( MeowDefaultSeed, Len, TestSample.data, Hash );
 
-    EndETWZone( *traceSession );
+        EndETWZone( *traceSession, *zone );
+    }
     
     t1 := seconds_since_init();
 

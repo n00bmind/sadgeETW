@@ -483,6 +483,7 @@ ThreadGuid :: #run DefineGUID(
     0x11d0,
     0x9d, 0xda, 0x00, 0xc0, 0x4f, 0xd7, 0xba, 0x7c
 );
+SwitchThreadOpCode :: 36;
 
 /* ce1dbfb4-137e-4da6-87b0-3f59aa102cbc */
 PerfInfoGuid :: #run DefineGUID(
