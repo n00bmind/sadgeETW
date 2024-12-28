@@ -338,12 +338,27 @@ EndETWZone :: ( session: *ETWSession, zone: *ETWZone )
     }
 }
 
-GetOrWaitForResults :: ( session: *ETWSession ) -> ETWResults
+IsComplete :: ( zone: *ETWZone ) -> bool
 {
-    // TODO 
-    Sleep( 3000 );
+    // FIXME Acquire barrier
+    return zone.results.completed;
+}
 
-    return .{};
+GetOrWaitForResults :: ( zone: *ETWZone ) -> ETWResults
+{
+    // FIXME Account for errors
+    while !IsComplete( zone )
+        YieldProcessor();
+
+    return zone.results;
+}
+
+PrintResults :: ( counters: []Counter, results: ETWResults )
+{
+    for c : counters
+    {
+        print( "%: %\n", c.name, results.counterValues[it_index] );
+    }
 }
 
 
@@ -498,7 +513,7 @@ EventRecordCallback :: ( event: *EVENT_RECORD ) #c_call
             {
                 entered := opcode == ZoneEnter;
                 log( "% -> % zone for cpu % / thread %\n", timeCycles, ifx entered then "Begin" else "End", cpuIdx, threadId );
-                log( "    user: %, extended: %\n", event.UserDataLength, event.ExtendedDataCount );
+                // log( "    user: %, extended: %\n", event.UserDataLength, event.ExtendedDataCount );
 
                 if opcode == ZoneEnter
                 {
@@ -543,6 +558,7 @@ EventRecordCallback :: ( event: *EVENT_RECORD ) #c_call
             // Only care about context switches
             if opcode == SwitchThreadOpCode
             {
+                logMsg := false;
                 counterValues: [MaxCounters] u64;
                 // TODO Why do we even need this crap again? How is casting supposed to work for "array views" then?
                 countersView: []u64 = .{ session.counters.count, counterValues.data };
@@ -553,6 +569,8 @@ EventRecordCallback :: ( event: *EVENT_RECORD ) #c_call
                 // Is the thread we're switching from one of ours?
                 if( cpu.trackedThreadId == eventData.oldThreadId )
                 {
+                    logMsg = true;
+
                     // Ensure we're not suspending a thread before properly starting its top zone
                     assert( cpu.waitingForSysExit == null );
                     // No longer tracking this thread on this cpu
@@ -576,6 +594,8 @@ EventRecordCallback :: ( event: *EVENT_RECORD ) #c_call
                 resumedThread := FindThreadState( session, eventData.newThreadId );
                 if resumedThread
                 {
+                    logMsg = true;
+
                     // Start tracking this thread on this cpu
                     cpu.trackedThreadId = eventData.newThreadId;
 
@@ -591,6 +611,12 @@ EventRecordCallback :: ( event: *EVENT_RECORD ) #c_call
                         zone.results.contextSwitchCount += 1;
                     }
                 }
+
+                if logMsg
+                {
+                    log( "% -> SwitchThread on cpu % / from thread % -> to thread %\n", timeCycles, cpuIdx,
+                         eventData.oldThreadId, eventData.newThreadId );
+                }
             }
         }
         else if eventGUID == PerfInfoGuid
@@ -605,8 +631,7 @@ EventRecordCallback :: ( event: *EVENT_RECORD ) #c_call
                 {
                     cpu.waitingForSysExit = null;
 
-                    log( "% -> SysCallExit with % ext data for cpu % / thread %\n", timeCycles, event.ExtendedDataCount,
-                         cpuIdx, threadId );
+                    log( "% -> SysCallExit on cpu % / thread %\n", timeCycles, cpuIdx, threadId );
 
                     FetchPMCValues( session, event, *countersView );
                     ApplyPMCsAsOpen( *zone.results, countersView, timeCycles );
@@ -616,8 +641,7 @@ EventRecordCallback :: ( event: *EVENT_RECORD ) #c_call
             {
                 if cpu.trackedThreadId
                 {
-                    log( "% -> SysCallEnter with % ext data for cpu % / thread %\n", timeCycles, event.ExtendedDataCount,
-                         cpuIdx, threadId );
+                    log( "% -> SysCallEnter on cpu % / thread %\n", timeCycles, cpuIdx, threadId );
 
                     // Remember the state at this SysEnter so it can be applied to a zone later if there is a following ZoneExit event
                     FetchPMCValues( session, event, *countersView );
@@ -630,3 +654,11 @@ EventRecordCallback :: ( event: *EVENT_RECORD ) #c_call
         globalProcessedEventCount += 1;
     }
 }
+
+YieldProcessor :: ()
+{
+    #asm {
+        pause;
+    }
+}
+

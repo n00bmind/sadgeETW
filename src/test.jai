@@ -141,8 +141,8 @@ main :: ()
     // Apparently required by a macro in the meow_hash module
     Len := cast(u64) TestSample.count;
 
+    zone: ETWZone;
     {
-        zone: ETWZone;
         BeginETWZone( *traceSession, *zone );
 
         MeowHash( MeowDefaultSeed, Len, TestSample.data, Hash );
@@ -159,7 +159,9 @@ main :: ()
         formatInt(MeowU32From(Hash, 0), 16),
         (Len / (t1 - t0)) / (1024 * 1024 * 1024));
 
-    results := GetOrWaitForResults( *traceSession );
+    results := GetOrWaitForResults( *zone );
+    print( "\n\n##### Results:\n" );
+    PrintResults( counters, results );
 
     ShutdownETWSession( *traceSession );
 }
