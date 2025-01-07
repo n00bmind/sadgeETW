@@ -467,9 +467,11 @@ FetchPMCValues :: ( session: *ETWSession, event: *EVENT_RECORD, dataOut: *[]u64 
 
 ApplyPMCsAsOpen :: ( results: *ETWResults, values: []u64, tsc: u64 )
 {
+    prev := results.counterValues;
     for idx: 0 .. values.count - 1
     {
         results.counterValues[idx] -= values[idx];
+        print( "% - % = %\n", prev[idx], values[idx], results.counterValues[idx] );
     }
     
     results.elapsedTSC -= tsc;
@@ -477,9 +479,11 @@ ApplyPMCsAsOpen :: ( results: *ETWResults, values: []u64, tsc: u64 )
 
 ApplyPMCsAsClose :: ( results: *ETWResults, values: []u64, tsc: u64 )
 {
+    prev := results.counterValues;
     for idx: 0 .. values.count - 1
     {
         results.counterValues[idx] += values[idx];
+        print( "% + % = %\n", prev[idx], values[idx], results.counterValues[idx] );
     }
     
     results.elapsedTSC += tsc;
@@ -621,9 +625,6 @@ EventRecordCallback :: ( event: *EVENT_RECORD ) #c_call
         }
         else if eventGUID == PerfInfoGuid
         {
-            counterValues: [MaxCounters] u64;
-            countersView: []u64 = .{ session.counters.count, counterValues.data };
-
             if opcode == SysCallExitOpCode
             {
                 zone := cpu.waitingForSysExit;
@@ -632,6 +633,9 @@ EventRecordCallback :: ( event: *EVENT_RECORD ) #c_call
                     cpu.waitingForSysExit = null;
 
                     log( "% -> SysCallExit on cpu % / thread %\n", timeCycles, cpuIdx, threadId );
+
+                    counterValues: [MaxCounters] u64;
+                    countersView: []u64 = .{ session.counters.count, counterValues.data };
 
                     FetchPMCValues( session, event, *countersView );
                     ApplyPMCsAsOpen( *zone.results, countersView, timeCycles );
@@ -644,6 +648,7 @@ EventRecordCallback :: ( event: *EVENT_RECORD ) #c_call
                     log( "% -> SysCallEnter on cpu % / thread %\n", timeCycles, cpuIdx, threadId );
 
                     // Remember the state at this SysEnter so it can be applied to a zone later if there is a following ZoneExit event
+                    countersView: []u64 = .{ session.counters.count, cpu.lastSysEnterCounters.data };
                     FetchPMCValues( session, event, *countersView );
                     cpu.lastSysEnterTSC = timeCycles;
                     cpu.lastSysEnterValid = true;
