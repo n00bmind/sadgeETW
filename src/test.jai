@@ -86,9 +86,6 @@ ARMCounters :: string.[
 
 #load "etw.jai";
 
-pmctrace_test :: #library,no_dll "pmctrace_test";
-CountNonZeroesWithBranch :: ( bufferSize: s64, buffer: *u8 ) -> s64 #foreign pmctrace_test;
-
 
 main :: ()
 {
