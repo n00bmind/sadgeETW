@@ -109,6 +109,8 @@ main :: ()
         thread_deinit( *t.thread );
 
         print( "\nThread % (% non-zeroes):\n", it_index, t.nonZeroCount );
+        print( "- % TSC elapsed / % iterations / % context switches\n",
+            t.bestResult.elapsedTSC, t.bufferSize, t.bestResult.contextSwitchCount );
         PrintResults( counters, t.bestResult );
     }
 

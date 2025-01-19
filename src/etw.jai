@@ -604,7 +604,6 @@ EventRecordCallback :: ( event: *EVENT_RECORD ) #c_call
                     for z: 0 .. suspendedThread.stackTop - 1
                     {
                         zone := suspendedThread.zoneStack[z];
-
                         // Apply the current PMCs as "ending" counters
                         ApplyPMCsAsClose( *zone.results, countersView, timeCycles );
                         zone.results.contextSwitchCount += 1;
@@ -630,7 +629,6 @@ EventRecordCallback :: ( event: *EVENT_RECORD ) #c_call
                         zone := resumedThread.zoneStack[z];
                         // Apply the current PMCs as "starting" counters
                         ApplyPMCsAsOpen( *zone.results, countersView, timeCycles );
-                        zone.results.contextSwitchCount += 1;
                     }
                 }
 
