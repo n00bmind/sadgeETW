@@ -1,4 +1,5 @@
 #import "Basic";
+#import "Math";
 #import "Windows_Utf8";
 #import "System";
 #import "Thread";
@@ -6,6 +7,9 @@
 
 #load "win32_etw.jai";
 
+
+// TODO Make this a module param
+DebugLog :: false;
 
 Counter :: struct
 {
@@ -82,7 +86,7 @@ ETWCPUState :: struct
     waitingForSysExit: *ETWZone;
     lastSysEnterCounters: [MaxCounters]u64;
     lastSysEnterTSC: u64;
-    trackedThreadId: DWORD;     // Thread currently running on this core
+    trackedThreadId: DWORD = U32_MAX;     // Thread currently running on this core
     lastSysEnterValid: bool;
 }
 
@@ -148,7 +152,7 @@ InitETWSession :: ( counters: []Counter, sessionOut: *ETWSession ) -> bool
     p.VersionNumber = 2;
     p.LoggerNameOffset = size_of(type_of( SessionProps.properties ));
     p.LogFileMode = EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_SYSTEM_LOGGER_MODE;
-    p.EnableFlags = EVENT_TRACE_FLAG_NO_SYSCONFIG | EVENT_TRACE_FLAG_SYSTEMCALL; // EVENT_TRACE_FLAG_CSWITCH; // |   // | EVENT_TRACE_FLAG_MEMORY_PAGE_FAULTS;
+    p.EnableFlags = EVENT_TRACE_FLAG_NO_SYSCONFIG | EVENT_TRACE_FLAG_SYSTEMCALL | EVENT_TRACE_FLAG_CSWITCH; // | EVENT_TRACE_FLAG_MEMORY_PAGE_FAULTS;
 
     // Start the tracing session
     sessionHandle: TRACEHANDLE;
@@ -184,6 +188,11 @@ InitETWSession :: ( counters: []Counter, sessionOut: *ETWSession ) -> bool
         }
     }
 
+    ContextSwitchId :: CLASSIC_EVENT_ID.{
+        EventGuid = ThreadGuid,
+        Type = SwitchThreadOpCode,
+    };
+
     SyscallEnterId :: CLASSIC_EVENT_ID.{
         PerfInfoGuid,
         SysCallEnterOpCode,
@@ -195,7 +204,7 @@ InitETWSession :: ( counters: []Counter, sessionOut: *ETWSession ) -> bool
         .[0,0,0,0,0,0,0]
     };
 
-    EventIds :: CLASSIC_EVENT_ID.[ SyscallEnterId, SyscallExitId ];
+    EventIds :: CLASSIC_EVENT_ID.[ ContextSwitchId, SyscallEnterId, SyscallExitId ];
     status = TraceSetInformation( sessionHandle, .TracePmcEventListInfo, EventIds.data, EventIds.count * size_of(CLASSIC_EVENT_ID) );
     if status != ERROR_SUCCESS
     {
@@ -210,8 +219,8 @@ InitETWSession :: ( counters: []Counter, sessionOut: *ETWSession ) -> bool
     // TODO Can we set it up so we only start receiving events once at least one profiled zone is active?
     // (so we can sleep the processing thread..)
     // TODO Presumably that thread is just suspended on a semaphore or similar?
-    // log( "##### Opening session for '%'..\n", wide_to_utf8_new( sessionProps.LoggerName.data,, temp ) );
-    log( "Opening ETW session for '%'..\n", wide_to_utf8_new( instanceName,, temp ) );
+    #if DebugLog
+        log( "Opening ETW session for '%'..\n", wide_to_utf8_new( instanceName,, temp ) );
 
     logFile: EVENT_TRACE_LOGFILEW;
     // logFile.LoggerName = sessionProps.LoggerName.data;
@@ -247,7 +256,8 @@ InitETWSession :: ( counters: []Counter, sessionOut: *ETWSession ) -> bool
 
 ShutdownETWSession :: ( session: *ETWSession )
 {
-    log( "Closing ETW session...\n" );
+    #if DebugLog
+        log( "Closing ETW session...\n" );
 
     status: ULONG;
     // stop producing new events
@@ -403,7 +413,8 @@ ProcessingThreadProc :: ( thread: *Thread ) -> s64
 {
     traceHandle := cast(TRACEHANDLE) thread.data;
 
-    log( "\n##### Beginning of ProcessTrace output:\n" );
+    #if DebugLog
+        log( "\n##### Beginning of ProcessTrace output:\n" );
     status := ProcessTrace( *traceHandle, 1, null, null );
     if status != ERROR_SUCCESS
     {
@@ -412,7 +423,8 @@ ProcessingThreadProc :: ( thread: *Thread ) -> s64
         log_error( "Handle is: %\n", traceHandle );
     }
 
-    log( "ProcessTrace exited (% events processed)\n", globalProcessedEventCount );
+    #if DebugLog
+        log( "ProcessTrace exited (% events processed)\n", globalProcessedEventCount );
     return 0;
 }
 
@@ -460,8 +472,11 @@ FetchPMCValues :: ( session: *ETWSession, event: *EVENT_RECORD, dataOut: *[]u64 
 
             memcpy( dataOut.data, xx item.DataPtr, item.DataSize );
 
-            // for globalStartCounterData
-            // log( "    counter %: %\n", it_index, it );
+            #if DebugLog
+            {
+                for globalStartCounterData
+                    log( "    counter %: %\n", it_index, it );
+            }
         }
     }
 }
@@ -472,7 +487,6 @@ ApplyPMCsAsOpen :: ( results: *ETWResults, values: []u64, tsc: u64 )
     for idx: 0 .. values.count - 1
     {
         results.counterValues[idx] -= values[idx];
-        print( "% - % = %\n", prev[idx], values[idx], results.counterValues[idx] );
     }
     
     results.elapsedTSC -= tsc;
@@ -484,7 +498,6 @@ ApplyPMCsAsClose :: ( results: *ETWResults, values: []u64, tsc: u64 )
     for idx: 0 .. values.count - 1
     {
         results.counterValues[idx] += values[idx];
-        print( "% + % = %\n", prev[idx], values[idx], results.counterValues[idx] );
     }
     
     results.elapsedTSC += tsc;
@@ -517,8 +530,8 @@ EventRecordCallback :: ( event: *EVENT_RECORD ) #c_call
             if eventData.sessionKey == session.sessionKey
             {
                 entered := opcode == ZoneEnter;
-                log( "% -> % zone for cpu % / thread %\n", timeCycles, ifx entered then "Begin" else "End", cpuIdx, threadId );
-                // log( "    user: %, extended: %\n", event.UserDataLength, event.ExtendedDataCount );
+                #if DebugLog
+                    log( "% -> % zone for cpu % / thread %\n", timeCycles, ifx entered then "Begin" else "End", cpuIdx, threadId );
 
                 if opcode == ZoneEnter
                 {
@@ -540,14 +553,15 @@ EventRecordCallback :: ( event: *EVENT_RECORD ) #c_call
                     srcCounters: []u64 = .{ session.counters.count, cpu.lastSysEnterCounters.data };
                     ApplyPMCsAsClose( *zone.results, srcCounters, cpu.lastSysEnterTSC );
                     cpu.lastSysEnterValid = false;
-                    // No longer tracking this thread on this cpu
-                    // TODO Is 0 really invalid for thread ids? Assert if unsure
-                    cpu.trackedThreadId = 0;
 
                     thread := FindThreadState( session, threadId );
                     assert( thread != null, "Received ZoneExit for untracked thread" );
                     // Remove this zone from the stack for this thread
                     PopZone( thread, zone );
+
+                    if thread.stackTop == 0
+                        // No longer tracking this thread on this cpu
+                        cpu.trackedThreadId = U32_MAX;
 
                     // FIXME Release fence
                     zone.results.completed = true;
@@ -579,7 +593,7 @@ EventRecordCallback :: ( event: *EVENT_RECORD ) #c_call
                     // Ensure we're not suspending a thread before properly starting its top zone
                     assert( cpu.waitingForSysExit == null );
                     // No longer tracking this thread on this cpu
-                    cpu.trackedThreadId = 0;
+                    cpu.trackedThreadId = U32_MAX;
 
                     suspendedThread := FindThreadState( session, eventData.oldThreadId );
                     assert( suspendedThread != null );
@@ -587,8 +601,10 @@ EventRecordCallback :: ( event: *EVENT_RECORD ) #c_call
 
                     FetchPMCValues( session, event, *countersView );
 
-                    for zone : suspendedThread.zoneStack
+                    for z: 0 .. suspendedThread.stackTop - 1
                     {
+                        zone := suspendedThread.zoneStack[z];
+
                         // Apply the current PMCs as "ending" counters
                         ApplyPMCsAsClose( *zone.results, countersView, timeCycles );
                         zone.results.contextSwitchCount += 1;
@@ -597,7 +613,7 @@ EventRecordCallback :: ( event: *EVENT_RECORD ) #c_call
 
                 // TODO This should probably be a hashtable lookup to minimize wasted time here
                 resumedThread := FindThreadState( session, eventData.newThreadId );
-                if resumedThread
+                if resumedThread && resumedThread.stackTop != 0
                 {
                     logMsg = true;
 
@@ -609,19 +625,21 @@ EventRecordCallback :: ( event: *EVENT_RECORD ) #c_call
 
                     FetchPMCValues( session, event, *countersView );
 
-                    for zone : resumedThread.zoneStack
+                    for z: 0 .. resumedThread.stackTop - 1
                     {
+                        zone := resumedThread.zoneStack[z];
                         // Apply the current PMCs as "starting" counters
                         ApplyPMCsAsOpen( *zone.results, countersView, timeCycles );
                         zone.results.contextSwitchCount += 1;
                     }
                 }
 
-                if logMsg
-                {
-                    log( "% -> SwitchThread on cpu % / from thread % -> to thread %\n", timeCycles, cpuIdx,
-                         eventData.oldThreadId, eventData.newThreadId );
-                }
+                #if DebugLog
+                    if logMsg
+                    {
+                        log( "% -> SwitchThread on cpu % / from thread % -> to thread %\n", timeCycles, cpuIdx,
+                            eventData.oldThreadId, eventData.newThreadId );
+                    }
             }
         }
         else if eventGUID == PerfInfoGuid
@@ -633,7 +651,8 @@ EventRecordCallback :: ( event: *EVENT_RECORD ) #c_call
                 {
                     cpu.waitingForSysExit = null;
 
-                    log( "% -> SysCallExit on cpu % / thread %\n", timeCycles, cpuIdx, threadId );
+                    #if DebugLog
+                        log( "% -> SysCallExit on cpu % / thread %\n", timeCycles, cpuIdx, threadId );
 
                     counterValues: [MaxCounters] u64;
                     countersView: []u64 = .{ session.counters.count, counterValues.data };
@@ -644,9 +663,10 @@ EventRecordCallback :: ( event: *EVENT_RECORD ) #c_call
             }
             else if opcode == SysCallEnterOpCode
             {
-                if cpu.trackedThreadId
+                if cpu.trackedThreadId != U32_MAX
                 {
-                    log( "% -> SysCallEnter on cpu % / thread %\n", timeCycles, cpuIdx, threadId );
+                    #if DebugLog
+                        log( "% -> SysCallEnter on cpu % / thread %\n", timeCycles, cpuIdx, threadId );
 
                     // Remember the state at this SysEnter so it can be applied to a zone later if there is a following ZoneExit event
                     countersView: []u64 = .{ session.counters.count, cpu.lastSysEnterCounters.data };

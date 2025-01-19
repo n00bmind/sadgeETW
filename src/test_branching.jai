@@ -27,9 +27,10 @@ ThreadContext :: struct
 TestThread :: ( thread: *Thread ) -> s64
 {
     ctx := cast(*ThreadContext) thread.data;
-    bufferData: *u8 = alloc( ctx.bufferSize,, temp );
     bufferSize := ctx.bufferSize;
     nonZeroCount := ctx.nonZeroCount;
+    // bufferData: *u8 = alloc( bufferSize,, temp );
+    bufferData: *u8 = alloc( bufferSize );
     
     if bufferData
     {
@@ -63,7 +64,7 @@ TestThread :: ( thread: *Thread ) -> s64
         }
     }
     else
-        log_error( "Unable to allocate test memory" );
+        log_error( "Unable to allocate % bytes of test memory", bufferSize );
 
     return 0;
 }
@@ -83,25 +84,33 @@ main :: ()
     if !InitETWSession( counters, *traceSession )
         exit( 1 );
 
-    testThread: ThreadContext;
-    testThread.session = *traceSession;
-    testThread.bufferSize = 1024 * 1024;
-    testThread.nonZeroCount = 0;
+    testThreads: [16] ThreadContext;
 
-    if thread_init( *testThread.thread, TestThread )
+    for * t: testThreads
     {
-        testThread.thread.data = *testThread;
-        thread_start( *testThread.thread );
+        t.session = *traceSession;
+        t.bufferSize = 1024 * 1024;
+        t.nonZeroCount = it_index * 4096;
 
-        while !thread_is_done( *testThread.thread, -1 )
-        {}
-        thread_deinit( *testThread.thread );
+        if thread_init( *t.thread, TestThread )
+        {
+            t.thread.data = t;
+            thread_start( *t.thread );
+        }
+        else
+            log_error( "Failed to create test thread %!", it_index );
     }
-    else
-        log_error( "Failed to create test thread!" );
 
     print( "\n\n##### Results:\n" );
-    PrintResults( counters, testThread.bestResult );
+    for * t: testThreads
+    {
+        while !thread_is_done( *t.thread, -1 )
+        {}
+        thread_deinit( *t.thread );
+
+        print( "\nThread % (% non-zeroes):\n", it_index, t.nonZeroCount );
+        PrintResults( counters, t.bestResult );
+    }
 
     ShutdownETWSession( *traceSession );
 }
